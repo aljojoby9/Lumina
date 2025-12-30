@@ -83,3 +83,29 @@ export interface UserProfile {
   email: string | null;
   displayName: string | null;
 }
+
+// Best Moments Feature Types
+export interface MomentAnalysis {
+  timestamp: number;
+  interestScore: number;  // 1-10
+  reason: string;         // Why this moment is interesting
+  suggestedDuration: number; // How long this moment should be in the highlight
+}
+
+export interface BestMomentsConfig {
+  targetDuration: number;   // e.g., 30 seconds
+  samplingInterval: number; // e.g., 30 seconds between samples
+  minClipLength: number;    // e.g., 2 seconds minimum per clip
+  maxClipLength: number;    // e.g., 6 seconds maximum per clip
+}
+
+export interface FrameData {
+  timestamp: number;
+  imageBase64: string;
+}
+
+export interface BestMomentsResult {
+  moments: MomentAnalysis[];
+  actions: AIAction[];
+  summary: string;
+}
