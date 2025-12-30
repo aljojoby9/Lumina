@@ -1,0 +1,5 @@
+{
+  "name": "Lumina AI Video Editor",
+  "description": "A professional-grade web video editor powered by AI. Features a timeline, manual effect controls, and an intelligent AI assistant that can analyze video context and perform edits based on natural language prompts.",
+  "requestFramePermissions": []
+}
