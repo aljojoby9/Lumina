@@ -16,6 +16,7 @@ import { processUserCommand } from '../services/geminiService';
 import { saveProject } from '../services/db';
 import { saveFileToLocal, getFileFromLocal } from '../services/localStore';
 import { extractBestMoments } from '../services/videoAnalysisService';
+import { generateSubtitles } from '../services/subtitleService';
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
@@ -39,6 +40,9 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
     const [isViewingDraft, setIsViewingDraft] = useState(false);
     const [isAnalyzingMoments, setIsAnalyzingMoments] = useState(false);
     const [analysisProgress, setAnalysisProgress] = useState(0);
+    const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
+    const [subtitleProgress, setSubtitleProgress] = useState(0);
+    const [subtitleStatus, setSubtitleStatus] = useState('');
     const [analysisStatus, setAnalysisStatus] = useState('');
 
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -431,6 +435,77 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
         }
     };
 
+    const handleGenerateSubtitles = async () => {
+        if (clips.length === 0) return;
+
+        // Find the first video clip
+        const videoClip = clips.find(c => c.type === 'video');
+        if (!videoClip) {
+            setMessages(prev => [...prev, {
+                id: generateId(),
+                role: 'model',
+                text: "I need a video clip to generate subtitles. Please upload a video first!"
+            }]);
+            return;
+        }
+
+        setIsGeneratingSubtitles(true);
+        setSubtitleProgress(0);
+        setSubtitleStatus("Preparing video analysis...");
+
+        // Add user message
+        setMessages(prev => [...prev, {
+            id: generateId(),
+            role: 'user',
+            text: "Generate automatic subtitles for this video"
+        }]);
+
+        try {
+            // Create a temporary video element for analysis
+            const tempVideo = document.createElement('video');
+            tempVideo.src = videoClip.src;
+            tempVideo.crossOrigin = "anonymous";
+            tempVideo.preload = "metadata";
+
+            await new Promise<void>((resolve, reject) => {
+                tempVideo.onloadedmetadata = () => resolve();
+                tempVideo.onerror = () => reject(new Error("Failed to load video"));
+            });
+
+            // Run the subtitle generation
+            const result = await generateSubtitles(
+                tempVideo,
+                { style: 'descriptive' },
+                (progress, status) => {
+                    setSubtitleProgress(progress);
+                    setSubtitleStatus(status);
+                }
+            );
+
+            // Add the generated subtitles to existing subtitles
+            setSubtitles(prev => [...prev, ...result.subtitles]);
+
+            // Add success message
+            setMessages(prev => [...prev, {
+                id: generateId(),
+                role: 'model',
+                text: `✨ ${result.summary}\n\nI've added ${result.subtitles.length} subtitles to your video. Play the video to see them!`
+            }]);
+
+        } catch (error: any) {
+            console.error("Subtitle generation failed:", error);
+            setMessages(prev => [...prev, {
+                id: generateId(),
+                role: 'model',
+                text: `I encountered an error while generating subtitles: ${error.message || "Unknown error"}. Please try again.`
+            }]);
+        } finally {
+            setIsGeneratingSubtitles(false);
+            setSubtitleProgress(0);
+            setSubtitleStatus("");
+        }
+    };
+
     const startPreview = () => {
         setVideoState(prev => ({
             ...prev,
@@ -536,7 +611,7 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
 
                     <button
                         onClick={() => handleAICommand("Generate a professional first draft of this project.")}
-                        disabled={isProcessingAI || clips.length === 0 || isExporting || isAnalyzingMoments}
+                        disabled={isProcessingAI || clips.length === 0 || isExporting || isAnalyzingMoments || isGeneratingSubtitles}
                         className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-lumina-600 hover:from-purple-500 hover:to-lumina-500 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-50 shadow-lg"
                     >
                         {isProcessingAI ? <Loader2 size={16} className="animate-spin" /> : <Clapperboard size={16} />}
@@ -545,11 +620,20 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
 
                     <button
                         onClick={handleBestMoments}
-                        disabled={isProcessingAI || clips.length === 0 || isExporting || isAnalyzingMoments}
+                        disabled={isProcessingAI || clips.length === 0 || isExporting || isAnalyzingMoments || isGeneratingSubtitles}
                         className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-50 shadow-lg"
                     >
                         {isAnalyzingMoments ? <Loader2 size={16} className="animate-spin" /> : <Stars size={16} />}
                         Best Moments
+                    </button>
+
+                    <button
+                        onClick={handleGenerateSubtitles}
+                        disabled={isProcessingAI || clips.length === 0 || isExporting || isAnalyzingMoments || isGeneratingSubtitles}
+                        className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-50 shadow-lg"
+                    >
+                        {isGeneratingSubtitles ? <Loader2 size={16} className="animate-spin" /> : <Type size={16} />}
+                        Subtitles
                     </button>
 
                     <input type="file" ref={fileInputRef} className="hidden" multiple accept="video/*,image/*" onChange={handleFileUpload} />
@@ -771,6 +855,58 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                                                 </div>
 
                                                 <p className="text-center text-[10px] text-gray-600 italic">Scanning video for the most exciting moments...</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {isGeneratingSubtitles && (
+                                    <div className="absolute inset-0 bg-black/80 z-[60] flex flex-col items-center justify-center backdrop-blur-xl animate-in fade-in duration-500">
+                                        <div className="w-full max-w-md p-8 bg-dark-surface border border-cyan-500/30 rounded-3xl shadow-[0_0_100px_rgba(6,182,212,0.15)] relative overflow-hidden">
+                                            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-500/5 to-transparent h-20 w-full animate-[scan_2s_linear_infinite]" />
+
+                                            <div className="flex items-center gap-4 mb-8">
+                                                <div className="w-16 h-16 rounded-2xl bg-cyan-500/20 flex items-center justify-center text-cyan-400 border border-cyan-500/20">
+                                                    <Type size={32} className="animate-pulse" />
+                                                </div>
+                                                <div>
+                                                    <h3 className="text-2xl font-black text-white uppercase tracking-tighter">Subtitles</h3>
+                                                    <p className="text-xs text-gray-500 uppercase font-bold tracking-widest">AI Generation</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-6">
+                                                <div className="space-y-2">
+                                                    <div className="flex justify-between text-[10px] text-cyan-400 font-black uppercase tracking-widest">
+                                                        <span>{subtitleStatus || "Generating..."}</span>
+                                                        <span>{Math.round(subtitleProgress)}%</span>
+                                                    </div>
+                                                    <div className="h-3 bg-gray-900 rounded-full overflow-hidden border border-white/5 p-0.5">
+                                                        <div
+                                                            className="h-full bg-gradient-to-r from-cyan-500 to-blue-600 rounded-full transition-all duration-300"
+                                                            style={{ width: `${subtitleProgress}%` }}
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="p-4 bg-black/40 rounded-2xl border border-white/5 flex items-center gap-3">
+                                                        <Sparkles size={16} className="text-cyan-500 animate-pulse" />
+                                                        <div className="flex flex-col">
+                                                            <span className="text-[8px] text-gray-600 font-bold uppercase">AI Engine</span>
+                                                            <span className="text-[10px] text-green-500 font-black uppercase">Active</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="p-4 bg-black/40 rounded-2xl border border-white/5 flex items-center gap-3">
+                                                        <Type size={16} className="text-gray-500" />
+                                                        <div className="flex flex-col">
+                                                            <span className="text-[8px] text-gray-600 font-bold uppercase">Text Detection</span>
+                                                            <span className="text-[10px] text-white font-black uppercase">Running</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <p className="text-center text-[10px] text-gray-600 italic">Analyzing video frames and generating subtitles...</p>
                                             </div>
                                         </div>
                                     </div>
