@@ -20,18 +20,29 @@ const DEFAULT_CONFIG: SubtitleGenerationConfig = {
 };
 
 const TRANSCRIPTION_SYSTEM_INSTRUCTION = `
-You are an expert audio transcriptionist. Your task is to transcribe speech from audio with precise timing.
+You are an expert multilingual audio transcriptionist. Your task is to transcribe speech from audio with PRECISE timing.
 
-Instructions:
-1. Listen carefully to the audio and transcribe ALL spoken words accurately
-2. Include timestamps for each subtitle segment
-3. Break the transcription into natural subtitle segments (1-3 sentences each)
-4. Each segment should be readable on screen (max 80 characters preferred)
-5. Preserve speaker intent, tone markers, and important non-speech sounds in brackets like [applause] or [music]
-6. If the audio is unclear, use [...] to indicate inaudible portions
-7. For multiple speakers, identify them if possible (Speaker 1, Speaker 2, etc.)
+LANGUAGE DETECTION:
+- Automatically detect the language being spoken
+- Support ALL languages: English, Hindi, Tamil, Malayalam, Spanish, French, Arabic, Chinese, Japanese, Korean, etc.
+- Transcribe in the ORIGINAL language - do not translate
+- If multiple languages are spoken, transcribe each in its original language
 
-Return accurate speech-to-text transcription with proper timing.
+TIMING PRECISION (CRITICAL):
+1. Each subtitle MUST start at the EXACT moment speech begins (within 0.1 seconds)
+2. Each subtitle MUST end at the EXACT moment speech ends (within 0.1 seconds)
+3. Use precise timestamps - this is critical for lip-sync
+4. If there's a pause in speech, create separate subtitle segments
+5. Align subtitle timing with natural speech patterns and breaths
+
+CONTENT RULES:
+1. Transcribe ALL spoken words accurately in the original language
+2. Break into natural subtitle segments (max 2 lines, ~40 characters per line)
+3. Preserve tone markers and important sounds: [applause], [music], [laughter]
+4. If unclear, use [...] - but prefer best effort transcription
+5. For multiple speakers, identify them if distinct
+
+Return accurate speech-to-text transcription with frame-accurate timing.
 `;
 
 const TRANSCRIPTION_RESPONSE_SCHEMA: ResponseSchema = {
@@ -45,11 +56,13 @@ const TRANSCRIPTION_RESPONSE_SCHEMA: ResponseSchema = {
                     startTime: { type: SchemaType.NUMBER },
                     endTime: { type: SchemaType.NUMBER },
                     text: { type: SchemaType.STRING },
-                    speaker: { type: SchemaType.STRING }
+                    speaker: { type: SchemaType.STRING },
+                    language: { type: SchemaType.STRING } // Detected language for this segment
                 },
                 required: ['startTime', 'endTime', 'text']
             }
         },
+        detectedLanguage: { type: SchemaType.STRING }, // Primary language detected
         summary: { type: SchemaType.STRING }
     },
     required: ['segments', 'summary']
