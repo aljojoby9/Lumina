@@ -8,11 +8,15 @@ const generateId = () => Math.random().toString(36).substr(2, 9);
 export interface SubtitleGenerationConfig {
     language: string;          // Target language (default: 'en')
     chunkDuration: number;     // Duration of each audio chunk in seconds (default: 30)
+    startTime?: number;        // Start time in seconds (for clip portions)
+    endTime?: number;          // End time in seconds (for clip portions)
 }
 
 const DEFAULT_CONFIG: SubtitleGenerationConfig = {
     language: 'en',
-    chunkDuration: 30
+    chunkDuration: 30,
+    startTime: 0,
+    endTime: undefined
 };
 
 const TRANSCRIPTION_SYSTEM_INSTRUCTION = `
@@ -370,8 +374,18 @@ export async function generateSubtitles(
 
         onProgress?.(90, "Processing subtitles...");
 
-        // Clean up and return
-        const cleanedSubtitles = cleanupSubtitles(result.segments);
+        // Clean up subtitles
+        let cleanedSubtitles = cleanupSubtitles(result.segments);
+
+        // Filter subtitles to only include those within the specified range
+        const startTime = finalConfig.startTime || 0;
+        const endTime = finalConfig.endTime || Infinity;
+
+        cleanedSubtitles = cleanedSubtitles.filter(sub => {
+            const subEnd = sub.start + sub.duration;
+            // Include if subtitle overlaps with the specified range
+            return sub.start < endTime && subEnd > startTime;
+        });
 
         onProgress?.(100, "Done!");
 

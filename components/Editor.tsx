@@ -657,7 +657,7 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
             // Run the subtitle generation
             const result = await generateSubtitles(
                 tempVideo,
-                { style: 'descriptive' },
+                {},
                 (progress, status) => {
                     setSubtitleProgress(progress);
                     setSubtitleStatus(status);
