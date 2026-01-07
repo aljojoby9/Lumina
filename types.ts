@@ -26,7 +26,7 @@ export interface VideoState {
 }
 
 export interface AIAction {
-  action: 'set_speed' | 'set_volume' | 'apply_filter' | 'set_custom_filter' | 'set_transition' | 'trim_clip' | 'remove_clip' | 'split_clip' | 'seek_to' | 'add_subtitles' | 'enhance_audio' | 'focus_object' | 'unknown';
+  action: 'set_speed' | 'set_volume' | 'apply_filter' | 'set_custom_filter' | 'set_transition' | 'trim_clip' | 'remove_clip' | 'split_clip' | 'seek_to' | 'add_subtitles' | 'enhance_audio' | 'focus_object' | 'keep_only_highlights' | 'unknown';
   parameters?: {
     value?: number | string;
     timestamp?: number;
@@ -35,6 +35,9 @@ export interface AIAction {
     targetClipId?: string;
     startOffset?: number;
     endOffset?: number;
+    ranges?: { start: number, end: number }[];
+    transition?: string;
+    filter?: string;
   };
 }
 

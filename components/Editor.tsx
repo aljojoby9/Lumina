@@ -1,11 +1,10 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     ArrowLeft, Save, Plus, Loader2, Upload, CheckCircle2, Wand2, Sparkles,
     Play, Pause, Scissors, Type, LayoutTemplate, RotateCcw, Clapperboard,
     Moon, Coffee, Film, Zap, Sun, Repeat, Layers, Flame,
     Minimize2, ArrowLeftFromLine, ArrowRightFromLine, Maximize, Minimize, Wind,
-    Download, FileVideo, Cpu, Stars
+    Download, FileVideo, Cpu, Stars, Undo2, Redo2
 } from 'lucide-react';
 import VideoPlayer, { VideoPlayerRef } from './VideoPlayer';
 import Timeline from './Timeline';
@@ -14,7 +13,7 @@ import AIAssistant from './AIAssistant';
 import { VideoState, ChatMessage, TimelineClip, Project, AIAction, Subtitle, FilterType, TransitionType } from '../types';
 import { processUserCommand } from '../services/geminiService';
 import { saveProject } from '../services/db';
-import { saveFileToLocal, getFileFromLocal } from '../services/localStore';
+import { uploadMediaFile, getMediaFileURL } from '../services/storageService';
 import { extractBestMoments } from '../services/videoAnalysisService';
 import { generateSubtitles } from '../services/subtitleService';
 
@@ -45,6 +44,15 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
     const [subtitleStatus, setSubtitleStatus] = useState('');
     const [analysisStatus, setAnalysisStatus] = useState('');
 
+    // History state for undo/redo
+    interface HistoryState {
+        clips: TimelineClip[];
+        subtitles: Subtitle[];
+    }
+    const [history, setHistory] = useState<HistoryState[]>([]);
+    const [historyIndex, setHistoryIndex] = useState(-1);
+    const isUndoRedoAction = useRef(false);
+
     const fileInputRef = useRef<HTMLInputElement>(null);
     const playerRef = useRef<VideoPlayerRef>(null);
     const requestRef = useRef<number>(null);
@@ -62,7 +70,11 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
     ) => {
         setSaveStatus('saving');
         try {
-            const clipsForDb = currentClips.map(({ src, ...rest }) => ({ ...rest, src: '' }));
+            // Keep Supabase URLs (they're permanent), only strip blob URLs
+            const clipsForDb = currentClips.map(({ src, ...rest }) => ({
+                ...rest,
+                src: src?.startsWith('blob:') ? '' : (src || '')
+            }));
             await saveProject(project.id, {
                 videoState: state,
                 clips: clipsForDb,
@@ -83,16 +95,68 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
         const restore = async () => {
             setIsLoadingMedia(true);
             try {
-                const restoredClips = await Promise.all(project.clips.map(async (c) => {
-                    const f = await getFileFromLocal(c.id);
-                    return { ...c, src: f ? URL.createObjectURL(f) : '' };
-                }));
+                const restoredClips: TimelineClip[] = [];
+                let missingFiles = 0;
+
+                for (const c of project.clips) {
+                    try {
+                        console.log(`Restoring clip ${c.id}: ${c.name}, saved src: ${c.src?.substring(0, 50)}...`);
+
+                        // If the clip already has a valid Supabase URL saved, use it directly
+                        if (c.src && c.src.includes('supabase.co')) {
+                            console.log(`Using saved Supabase URL for ${c.id}`);
+                            restoredClips.push({ ...c });
+                        } else {
+                            // Otherwise, try to fetch from Supabase Storage by ID
+                            const url = await getMediaFileURL(project.id, c.id, c.name);
+                            console.log(`Fetched URL for ${c.id}:`, url);
+                            if (url) {
+                                restoredClips.push({ ...c, src: url });
+                            } else {
+                                missingFiles++;
+                                console.warn(`File missing for clip ${c.id}: ${c.name}`);
+                            }
+                        }
+                    } catch (err) {
+                        missingFiles++;
+                        console.error(`Failed to restore clip ${c.id}:`, err);
+                    }
+                }
+
+                console.log(`Restored ${restoredClips.length} clips, ${missingFiles} missing`);
                 setClips(restoredClips);
+
+                // Recalculate timeline if clips were restored
+                if (restoredClips.length > 0) {
+                    let currentStart = 0;
+                    const recalculated = restoredClips.map(clip => {
+                        const updated = { ...clip, start: currentStart };
+                        currentStart += clip.duration;
+                        return updated;
+                    });
+                    setClips(recalculated);
+
+                    const totalDuration = recalculated.reduce((acc, c) => acc + c.duration, 0);
+                    setVideoState(prev => ({ ...prev, duration: totalDuration }));
+                }
+
                 // Sync initial state from project
                 setSubtitles(project.subtitles || []);
-                setVideoState(project.videoState);
+                if (restoredClips.length === 0) {
+                    // Reset video state if no clips restored
+                    setVideoState(project.videoState);
+                }
                 setMessages(project.messages);
                 setProjectName(project.name);
+
+                // Notify user if files were missing
+                if (missingFiles > 0 && project.clips.length > 0) {
+                    setMessages(prev => [...prev, {
+                        id: generateId(),
+                        role: 'model',
+                        text: `⚠️ ${missingFiles} media file(s) couldn't be restored from cloud storage. Please re-import your video files to continue editing.`
+                    }]);
+                }
             } catch (e) {
                 console.error("Restore failed:", e);
             } finally {
@@ -117,6 +181,65 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
         videoState.brightness, videoState.contrast, videoState.saturation,
         videoState.fadeIn, videoState.fadeOut, videoState.isAudioEnhanced,
         persistProject]);
+
+    // History tracking for undo/redo
+    useEffect(() => {
+        if (isLoadingMedia || isUndoRedoAction.current) {
+            isUndoRedoAction.current = false;
+            return;
+        }
+
+        // Don't track if nothing has changed
+        if (clips.length === 0 && subtitles.length === 0) return;
+
+        const newState: HistoryState = {
+            clips: JSON.parse(JSON.stringify(clips)),
+            subtitles: JSON.parse(JSON.stringify(subtitles))
+        };
+
+        setHistory(prev => {
+            // Trim history if we're not at the end (we made changes after undoing)
+            const trimmed = prev.slice(0, historyIndex + 1);
+            // Limit history to 50 entries
+            const limited = trimmed.length >= 50 ? trimmed.slice(1) : trimmed;
+            return [...limited, newState];
+        });
+        setHistoryIndex(prev => Math.min(prev + 1, 49));
+    }, [clips.length, subtitles.length, isLoadingMedia]);
+
+    // Undo function
+    const handleUndo = useCallback(() => {
+        if (historyIndex <= 0) return;
+
+        isUndoRedoAction.current = true;
+        const prevState = history[historyIndex - 1];
+        setClips(prevState.clips);
+        setSubtitles(prevState.subtitles);
+        setHistoryIndex(prev => prev - 1);
+
+        const totalDur = prevState.clips.reduce((acc, c) => acc + c.duration, 0);
+        setVideoState(prev => ({ ...prev, duration: totalDur }));
+    }, [history, historyIndex]);
+
+    // Redo function  
+    const handleRedo = useCallback(() => {
+        if (historyIndex >= history.length - 1) return;
+
+        isUndoRedoAction.current = true;
+        const nextState = history[historyIndex + 1];
+        setClips(nextState.clips);
+        setSubtitles(nextState.subtitles);
+        setHistoryIndex(prev => prev + 1);
+
+        const totalDur = nextState.clips.reduce((acc, c) => acc + c.duration, 0);
+        setVideoState(prev => ({ ...prev, duration: totalDur }));
+    }, [history, historyIndex]);
+
+    // Toggle play/pause
+    const handleTogglePlay = useCallback(() => {
+        if (isExporting) return;
+        setVideoState(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
+    }, [isExporting]);
 
     // PLAYBACK TICKER
     const animate = useCallback((time: number) => {
@@ -169,7 +292,19 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
         for (const file of files) {
             const id = generateId();
             const isVideo = file.type.startsWith('video/');
-            await saveFileToLocal(id, file);
+
+            // Upload to Supabase Storage
+            try {
+                await uploadMediaFile(project.id, id, file);
+            } catch (uploadErr: any) {
+                console.error('Failed to upload file:', uploadErr);
+                setMessages(prev => [...prev, {
+                    id: generateId(),
+                    role: 'model',
+                    text: `⚠️ Upload failed for ${file.name}: ${uploadErr.message || 'Unknown error. Check console for details.'}`
+                }]);
+                continue;
+            }
 
             let duration = 5;
             if (isVideo) {
@@ -182,10 +317,13 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                 });
             }
 
+            // Get the download URL for immediate use
+            const downloadURL = await getMediaFileURL(project.id, id, file.name);
+
             const newClip: TimelineClip = {
                 id,
                 type: isVideo ? 'video' : 'image',
-                src: URL.createObjectURL(file),
+                src: downloadURL || URL.createObjectURL(file),
                 name: file.name,
                 start: updatedClips.reduce((acc, c) => acc + c.duration, 0),
                 duration,
@@ -276,6 +414,50 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                         updatedClips.splice(idx, 1, c1, c2);
                         updatedClips = recalculateTimeline(updatedClips);
                         updates.currentTime = ts;
+                    }
+                }
+                break;
+            case 'keep_only_highlights':
+                // This action keeps only specific time ranges from the original video
+                const ranges = actionObj.parameters?.ranges || [];
+                const transitionType = (actionObj.parameters?.transition || 'fade') as TransitionType;
+                const filterType = (actionObj.parameters?.filter || 'none') as FilterType;
+
+                if (ranges.length > 0 && updatedClips.length > 0) {
+                    // Find the original video clip (first video clip as source)
+                    const originalClip = updatedClips.find(c => c.type === 'video');
+                    if (originalClip) {
+                        // Create new clips for each highlight range
+                        const highlightClips: TimelineClip[] = [];
+                        let currentStart = 0;
+
+                        for (let i = 0; i < ranges.length; i++) {
+                            const range = ranges[i];
+                            const clipDuration = range.end - range.start;
+
+                            highlightClips.push({
+                                id: generateId(),
+                                type: 'video',
+                                src: originalClip.src,
+                                name: `${originalClip.name} - Highlight ${i + 1}`,
+                                start: currentStart,
+                                duration: clipDuration,
+                                offset: range.start, // This makes it play from the correct position
+                                filter: filterType !== 'none' ? filterType : undefined,
+                                transitionIn: i > 0 ? transitionType : undefined, // Transition between clips
+                                transitionInDuration: 0.5
+                            });
+
+                            currentStart += clipDuration;
+                        }
+
+                        // Replace all clips with just the highlights
+                        updatedClips = highlightClips;
+
+                        // Update total duration
+                        const newDuration = highlightClips.reduce((acc, c) => acc + c.duration, 0);
+                        updates.duration = newDuration;
+                        updates.currentTime = 0;
                     }
                 }
                 break;
@@ -607,6 +789,34 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                         {saveStatus === 'saving' && <><Loader2 size={12} className="animate-spin text-lumina-400" /> Syncing</>}
                         {saveStatus === 'saved' && <><CheckCircle2 size={12} className="text-green-500" /> Saved</>}
                         {saveStatus === 'idle' && <span className="opacity-0">.</span>}
+                    </div>
+
+                    {/* Playback and Edit Controls */}
+                    <div className="flex items-center gap-1 mr-2 border-r border-gray-700 pr-3">
+                        <button
+                            onClick={handleTogglePlay}
+                            disabled={clips.length === 0 || isExporting}
+                            className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-all disabled:opacity-50"
+                            title={videoState.isPlaying ? "Pause" : "Play"}
+                        >
+                            {videoState.isPlaying ? <Pause size={18} /> : <Play size={18} />}
+                        </button>
+                        <button
+                            onClick={handleUndo}
+                            disabled={historyIndex <= 0 || isExporting}
+                            className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-all disabled:opacity-50"
+                            title="Undo"
+                        >
+                            <Undo2 size={18} />
+                        </button>
+                        <button
+                            onClick={handleRedo}
+                            disabled={historyIndex >= history.length - 1 || isExporting}
+                            className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-all disabled:opacity-50"
+                            title="Redo"
+                        >
+                            <Redo2 size={18} />
+                        </button>
                     </div>
 
                     <button

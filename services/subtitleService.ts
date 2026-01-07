@@ -152,49 +152,57 @@ async function extractAudioFromVideo(
 }
 
 /**
- * Alternative: Extract audio using OfflineAudioContext for better control
- * This method extracts audio directly from the video file
+ * Extract video/audio as base64 directly from video URL
+ * This is MUCH faster and less memory-intensive than WAV conversion
  */
-async function extractAudioAsWav(
+async function extractMediaAsBase64(
     videoSrc: string,
     onProgress?: (progress: number) => void
-): Promise<{ audioBase64: string; duration: number }> {
+): Promise<{ base64: string; mimeType: string; duration: number }> {
     return new Promise(async (resolve, reject) => {
         try {
             onProgress?.(5);
 
-            // Fetch the video as an array buffer
+            // Fetch the video as a blob
             const response = await fetch(videoSrc);
-            const arrayBuffer = await response.arrayBuffer();
+            const blob = await response.blob();
+            const mimeType = blob.type || 'video/mp4';
 
-            onProgress?.(20);
+            onProgress?.(30);
 
-            // Create audio context to decode
-            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+            // Get duration from a temporary video element
+            const tempVideo = document.createElement('video');
+            tempVideo.preload = 'metadata';
+            tempVideo.muted = true;
 
-            // Decode audio data from video
-            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            const videoDuration = await new Promise<number>((res, rej) => {
+                tempVideo.onloadedmetadata = () => {
+                    res(tempVideo.duration);
+                    // Clean up
+                    tempVideo.src = '';
+                    tempVideo.remove();
+                };
+                tempVideo.onerror = () => rej(new Error('Failed to get video duration'));
+                tempVideo.src = videoSrc;
+            });
 
-            onProgress?.(40);
+            onProgress?.(50);
 
-            // Convert to WAV format
-            const wavBlob = audioBufferToWav(audioBuffer);
-
-            onProgress?.(60);
-
-            // Convert to base64
+            // Convert blob to base64
             const reader = new FileReader();
 
             reader.onloadend = () => {
                 const base64 = (reader.result as string).split(',')[1];
+                onProgress?.(80);
                 resolve({
-                    audioBase64: base64,
-                    duration: audioBuffer.duration
+                    base64,
+                    mimeType,
+                    duration: videoDuration
                 });
             };
 
-            reader.onerror = () => reject(new Error("Failed to read audio data"));
-            reader.readAsDataURL(wavBlob);
+            reader.onerror = () => reject(new Error("Failed to read video data"));
+            reader.readAsDataURL(blob);
 
         } catch (err) {
             reject(err);
@@ -203,65 +211,13 @@ async function extractAudioAsWav(
 }
 
 /**
- * Convert AudioBuffer to WAV Blob
+ * Transcribe media using Gemini AI
+ * Supports both audio and video input
  */
-function audioBufferToWav(audioBuffer: AudioBuffer): Blob {
-    const numChannels = audioBuffer.numberOfChannels;
-    const sampleRate = audioBuffer.sampleRate;
-    const format = 1; // PCM
-    const bitDepth = 16;
-
-    // Interleave channels
-    const length = audioBuffer.length * numChannels * (bitDepth / 8);
-    const buffer = new ArrayBuffer(44 + length);
-    const view = new DataView(buffer);
-
-    // WAV header
-    const writeString = (offset: number, str: string) => {
-        for (let i = 0; i < str.length; i++) {
-            view.setUint8(offset + i, str.charCodeAt(i));
-        }
-    };
-
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + length, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true); // Subchunk1Size
-    view.setUint16(20, format, true);
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true);
-    view.setUint16(32, numChannels * (bitDepth / 8), true);
-    view.setUint16(34, bitDepth, true);
-    writeString(36, 'data');
-    view.setUint32(40, length, true);
-
-    // Write audio data
-    const channels: Float32Array[] = [];
-    for (let i = 0; i < numChannels; i++) {
-        channels.push(audioBuffer.getChannelData(i));
-    }
-
-    let offset = 44;
-    for (let i = 0; i < audioBuffer.length; i++) {
-        for (let ch = 0; ch < numChannels; ch++) {
-            const sample = Math.max(-1, Math.min(1, channels[ch][i]));
-            const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-            view.setInt16(offset, intSample, true);
-            offset += 2;
-        }
-    }
-
-    return new Blob([buffer], { type: 'audio/wav' });
-}
-
-/**
- * Transcribe audio using Gemini AI
- */
-async function transcribeAudioWithGemini(
-    audioBase64: string,
-    audioDuration: number,
+async function transcribeMediaWithGemini(
+    mediaBase64: string,
+    mimeType: string,
+    mediaDuration: number,
     chunkOffset: number,
     config: SubtitleGenerationConfig,
     onProgress?: (progress: number) => void
@@ -279,24 +235,27 @@ async function transcribeAudioWithGemini(
     const parts: any[] = [
         {
             inlineData: {
-                mimeType: 'audio/wav',
-                data: audioBase64
+                mimeType: mimeType,
+                data: mediaBase64
             }
         },
         {
-            text: `Transcribe this audio clip (${audioDuration.toFixed(1)} seconds long).
-            
-Please provide accurate speech-to-text transcription with timing information.
-The audio starts at ${chunkOffset.toFixed(1)} seconds in the full video.
-Adjust all timestamps to be relative to 0 (the start of this audio clip).
+            text: `Transcribe the speech/dialogue from this media (${mediaDuration.toFixed(1)} seconds long).
 
-Return each spoken segment with:
-- startTime: when the segment starts (in seconds from clip start)
-- endTime: when the segment ends (in seconds from clip start)  
+CRITICAL TIMING INSTRUCTIONS:
+1. Listen carefully to WHEN each phrase starts and ends
+2. The duration of each subtitle MUST match the actual speaking duration
+3. Short phrases (1-3 words) typically last 0.5-1.5 seconds
+4. Longer sentences typically last 2-5 seconds
+5. Do NOT make all subtitles the same duration - vary based on actual speech
+
+Return each spoken segment with PRECISE timing:
+- startTime: exact second when the speech BEGINS
+- endTime: exact second when the speech ENDS (not when next speech starts)
 - text: the transcribed speech
 - speaker: speaker identifier if distinguishable
 
-Be thorough and capture all spoken content.`
+Be thorough and capture ALL spoken content with accurate timing.`
         }
     ];
 
@@ -389,20 +348,20 @@ export async function generateSubtitles(
     onProgress?.(0, "Preparing audio extraction...");
 
     try {
-        // Extract audio from video
-        onProgress?.(5, "Extracting audio from video...");
+        // Extract video as base64 (much faster than WAV conversion)
+        onProgress?.(5, "Preparing video for analysis...");
 
-        const { audioBase64, duration } = await extractAudioAsWav(
+        const { base64, mimeType, duration } = await extractMediaAsBase64(
             videoElement.src,
-            (p) => onProgress?.(5 + p * 0.4, "Extracting audio...")
+            (p) => onProgress?.(5 + p * 0.4, "Processing video...")
         );
 
         onProgress?.(50, "Transcribing speech with AI...");
 
-        // For long videos, we might need to split into chunks
-        // But first, let's try sending the whole thing (Gemini supports up to ~9.5 hours of audio)
-        const result = await transcribeAudioWithGemini(
-            audioBase64,
+        // Send directly to Gemini (supports video/audio natively)
+        const result = await transcribeMediaWithGemini(
+            base64,
+            mimeType,
             duration,
             0,
             finalConfig,

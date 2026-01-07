@@ -182,6 +182,7 @@ export async function analyzeFramesForHighlights(
 
 /**
  * Generate edit actions to create a highlight reel from analyzed moments
+ * Returns a single action that keeps only the highlight portions
  */
 export function generateBestMomentsEdit(
     moments: MomentAnalysis[],
@@ -213,33 +214,39 @@ export function generateBestMomentsEdit(
     // Sort selected moments by timestamp for chronological order
     selectedMoments.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Generate split and trim actions
-    const actions: AIAction[] = [];
+    // Create highlight ranges (start and end times for each highlight)
+    const highlightRanges = selectedMoments.map(m => ({
+        start: Math.max(0, m.timestamp - 0.5), // Start half second before peak
+        end: m.timestamp + m.suggestedDuration,
+        score: m.interestScore,
+        reason: m.reason
+    }));
 
-    // First, split at each selected moment
-    for (const moment of selectedMoments) {
-        actions.push({
-            action: 'split_clip',
-            parameters: { timestamp: moment.timestamp }
-        });
-
-        // Also split at the end of the moment
-        actions.push({
-            action: 'split_clip',
-            parameters: { timestamp: moment.timestamp + moment.suggestedDuration }
-        });
+    // Merge overlapping ranges
+    const mergedRanges: { start: number; end: number }[] = [];
+    for (const range of highlightRanges) {
+        if (mergedRanges.length === 0) {
+            mergedRanges.push({ start: range.start, end: range.end });
+        } else {
+            const last = mergedRanges[mergedRanges.length - 1];
+            if (range.start <= last.end + 0.5) { // Merge if within 0.5s
+                last.end = Math.max(last.end, range.end);
+            } else {
+                mergedRanges.push({ start: range.start, end: range.end });
+            }
+        }
     }
 
-    // Apply fade transitions
-    actions.push({
-        action: 'set_transition',
-        parameters: { value: 'fade' }
-    });
+    const actions: AIAction[] = [];
 
-    // Apply a cinematic filter
+    // Main action: keep only the highlight portions
     actions.push({
-        action: 'apply_filter',
-        parameters: { value: 'dramatic' }
+        action: 'keep_only_highlights',
+        parameters: {
+            ranges: mergedRanges,
+            transition: 'fade',
+            filter: 'dramatic'
+        }
     });
 
     return actions;
