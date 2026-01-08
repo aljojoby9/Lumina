@@ -205,7 +205,7 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
             return [...limited, newState];
         });
         setHistoryIndex(prev => Math.min(prev + 1, 49));
-    }, [clips.length, subtitles.length, isLoadingMedia]);
+    }, [clips, subtitles, isLoadingMedia]);
 
     // Undo function
     const handleUndo = useCallback(() => {
@@ -883,7 +883,10 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                                 <div
                                     key={f.id}
                                     draggable={!isExporting}
-                                    onDragStart={(e) => e.dataTransfer.setData('preset', JSON.stringify({ type: 'filter', value: f.id }))}
+                                    onDragStart={(e) => {
+                                        e.dataTransfer.setData('preset', JSON.stringify({ type: 'filter', value: f.id }));
+                                        e.dataTransfer.effectAllowed = 'copy';
+                                    }}
                                     className={`w-12 flex flex-col items-center gap-1 group transition-all ${isExporting ? 'opacity-30 cursor-not-allowed' : 'cursor-grab active:cursor-grabbing hover:scale-110'}`}
                                     title={f.label}
                                 >
@@ -906,7 +909,10 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                                 <div
                                     key={t.id}
                                     draggable={!isExporting}
-                                    onDragStart={(e) => e.dataTransfer.setData('preset', JSON.stringify({ type: 'transition', value: t.id }))}
+                                    onDragStart={(e) => {
+                                        e.dataTransfer.setData('preset', JSON.stringify({ type: 'transition', value: t.id }));
+                                        e.dataTransfer.effectAllowed = 'copy';
+                                    }}
                                     className={`w-12 flex flex-col items-center gap-1 group transition-all ${isExporting ? 'opacity-30 cursor-not-allowed' : 'cursor-grab active:cursor-grabbing hover:scale-110'}`}
                                     title={t.label}
                                 >
