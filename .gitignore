@@ -30,3 +30,10 @@ dist-ssr
 # Tool directories
 .zencoder
 .zenflow
+
+# Python backend
+backend/vosk-model/
+backend/media/
+backend/__pycache__/
+*.pyc
+.venv/

@@ -11,11 +11,11 @@ import Timeline from './Timeline';
 import ControlPanel from './ControlPanel';
 import AIAssistant from './AIAssistant';
 import { VideoState, ChatMessage, TimelineClip, Project, AIAction, Subtitle, FilterType, TransitionType } from '../types';
-import { processUserCommand } from '../services/geminiService';
+import { processUserCommand } from '../services/pythonBackendClient';
 import { saveProject } from '../services/db';
-import { uploadMediaFile, getMediaFileURL } from '../services/storageService';
-import { extractBestMoments } from '../services/videoAnalysisService';
-import { generateSubtitles } from '../services/subtitleService';
+import { uploadMediaFile, getMediaFileURL, uploadExportedVideo } from '../services/storageService';
+import { extractBestMoments } from '../services/pythonBackendClient';
+import { generateSubtitles } from '../services/pythonBackendClient';
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
@@ -70,7 +70,7 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
     ) => {
         setSaveStatus('saving');
         try {
-            // Keep Supabase URLs (they're permanent), only strip blob URLs
+            // Keep backend URLs (they're permanent), only strip blob URLs
             const clipsForDb = currentClips.map(({ src, ...rest }) => ({
                 ...rest,
                 src: src?.startsWith('blob:') ? '' : (src || '')
@@ -102,12 +102,12 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                     try {
                         console.log(`Restoring clip ${c.id}: ${c.name}, saved src: ${c.src?.substring(0, 50)}...`);
 
-                        // If the clip already has a valid Supabase URL saved, use it directly
-                        if (c.src && c.src.includes('supabase.co')) {
-                            console.log(`Using saved Supabase URL for ${c.id}`);
+                        // If the clip already has a valid backend URL saved, use it directly
+                        if (c.src && (c.src.includes('localhost:8000') || c.src.includes('127.0.0.1:8000'))) {
+                            console.log(`Using saved backend URL for ${c.id}`);
                             restoredClips.push({ ...c });
                         } else {
-                            // Otherwise, try to fetch from Supabase Storage by ID
+                            // Otherwise, try to fetch from the backend by ID
                             const url = await getMediaFileURL(project.id, c.id, c.name);
                             console.log(`Fetched URL for ${c.id}:`, url);
                             if (url) {
@@ -154,7 +154,7 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                     setMessages(prev => [...prev, {
                         id: generateId(),
                         role: 'model',
-                        text: `⚠️ ${missingFiles} media file(s) couldn't be restored from cloud storage. Please re-import your video files to continue editing.`
+                        text: `⚠️ ${missingFiles} media file(s) couldn't be restored from storage. Please re-import your video files to continue editing.`
                     }]);
                 }
             } catch (e) {
@@ -293,9 +293,11 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
             const id = generateId();
             const isVideo = file.type.startsWith('video/');
 
-            // Upload to Supabase Storage
+            let downloadURL: string | undefined;
+
+            // Upload to backend storage
             try {
-                await uploadMediaFile(project.id, id, file);
+                downloadURL = await uploadMediaFile(project.id, id, file);
             } catch (uploadErr: any) {
                 console.error('Failed to upload file:', uploadErr);
                 setMessages(prev => [...prev, {
@@ -316,9 +318,6 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
                     video.src = URL.createObjectURL(file);
                 });
             }
-
-            // Get the download URL for immediate use
-            const downloadURL = await getMediaFileURL(project.id, id, file.name);
 
             const newClip: TimelineClip = {
                 id,
@@ -721,14 +720,32 @@ const Editor: React.FC<EditorProps> = ({ project, onBack }) => {
 
             setTimeout(() => {
                 const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+                const exportFilename = `${projectName || 'Lumina_Edit'}.webm`;
+
+                // Download locally
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.style.display = 'none';
                 a.href = url;
-                a.download = `${projectName || 'Lumina_Edit'}.webm`;
+                a.download = exportFilename;
                 document.body.appendChild(a);
                 a.click();
                 window.URL.revokeObjectURL(url);
+
+                // Also persist to backend storage
+                uploadExportedVideo(project.id, blob, exportFilename)
+                    .then((backendUrl) => {
+                        console.log(`Export saved to backend: ${backendUrl}`);
+                        setMessages(prev => [...prev, {
+                            id: generateId(),
+                            role: 'model',
+                            text: `✅ Video exported and saved! You can find it in the backend storage.`
+                        }]);
+                    })
+                    .catch((err) => {
+                        console.warn('Failed to save export to backend:', err);
+                    });
+
                 setIsExporting(false);
                 setExportProgress(0);
             }, 500);

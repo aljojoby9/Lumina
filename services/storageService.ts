@@ -1,9 +1,16 @@
-import { supabase, MEDIA_BUCKET } from "../supabaseConfig";
 import { auth } from "../firebaseConfig";
 
 /**
- * Upload a media file to Supabase Storage
- * Files are organized by user ID and project for easy management
+ * Lumina — File Storage Service (FastAPI Backend)
+ * Uploads, downloads, and deletes media files via the local Python backend.
+ * Replaces Firebase Storage / Supabase with local file storage.
+ */
+
+const API_BASE = "http://localhost:8000";
+
+/**
+ * Upload a media file to the FastAPI backend
+ * Files are stored at: backend/media/{userId}/{projectId}/{fileId}.{ext}
  */
 export const uploadMediaFile = async (
     projectId: string,
@@ -16,70 +23,53 @@ export const uploadMediaFile = async (
         throw new Error("User must be authenticated to upload files");
     }
 
-    // Create a file path: {userId}/{projectId}/{fileId}_{originalName}
-    // Include file extension for proper content type detection
-    const extension = file.name.split('.').pop() || 'mp4';
-    const filePath = `${userId}/${projectId}/${fileId}.${extension}`;
-
-    console.log(`Uploading file to Supabase Storage: ${filePath}`);
+    console.log(`Uploading file to backend: ${file.name}`);
     console.log(`File size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
     console.log(`File type: ${file.type}`);
     onProgress?.(10);
 
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("user_id", userId);
+    formData.append("project_id", projectId);
+    formData.append("file_id", fileId);
+
     try {
-        // Upload the file to Supabase Storage
-        const { data, error } = await supabase.storage
-            .from(MEDIA_BUCKET)
-            .upload(filePath, file, {
-                cacheControl: '3600',
-                upsert: true, // Overwrite if exists
-                contentType: file.type || 'video/mp4'
-            });
+        onProgress?.(30);
 
-        if (error) {
-            console.error(`Supabase upload error:`, error);
-            console.error(`Full error details:`, JSON.stringify(error, null, 2));
+        const response = await fetch(`${API_BASE}/api/files/upload`, {
+            method: "POST",
+            body: formData,
+        });
 
-            // Provide helpful error messages
-            if (error.message?.includes('Bucket not found')) {
-                throw new Error(`Storage bucket "${MEDIA_BUCKET}" not found. Please create it in Supabase Dashboard → Storage.`);
-            }
-            if (error.message?.includes('not allowed') || error.message?.includes('policy') || error.message?.includes('row-level security')) {
-                throw new Error(`Upload blocked by policy. Go to Supabase → Storage → Policies → media bucket → Add policy for INSERT with Target role "anon" and definition "true".`);
-            }
-            if (error.message?.includes('size') || error.message?.includes('payload')) {
-                throw new Error(`File too large. Max size is typically 50MB. Your file is ${(file.size / 1024 / 1024).toFixed(1)}MB.`);
-            }
-
-            throw new Error(`${error.message} (${(error as any).statusCode || 'unknown status'})`);
+        if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`Upload failed (${response.status}): ${detail}`);
         }
 
         onProgress?.(80);
 
-        // Get the public URL
-        const { data: urlData } = supabase.storage
-            .from(MEDIA_BUCKET)
-            .getPublicUrl(filePath);
+        const data = await response.json();
+        const downloadURL = `${API_BASE}${data.url}`;
 
-        console.log(`File uploaded successfully: ${filePath}`);
-        console.log(`Public URL: ${urlData.publicUrl}`);
+        console.log(`File uploaded successfully: ${downloadURL}`);
+        console.log(`File size on server: ${(data.size / 1024 / 1024).toFixed(2)} MB`);
         onProgress?.(100);
 
-        return urlData.publicUrl;
+        return downloadURL;
     } catch (error: any) {
-        console.error(`Failed to upload file: ${filePath}`, error);
+        console.error(`Failed to upload file: ${file.name}`, error);
         throw error;
     }
 };
 
 /**
- * Get public URL for a media file
- * Lists files to find the correct one since some may have extensions, some may not
+ * Get the URL for a stored media file
  */
 export const getMediaFileURL = async (
     projectId: string,
     fileId: string,
-    fileName?: string
+    _fileName?: string
 ): Promise<string | null> => {
     const userId = auth.currentUser?.uid;
     if (!userId) {
@@ -87,60 +77,25 @@ export const getMediaFileURL = async (
         return null;
     }
 
-    // Try to list files in the project folder to find the matching one
+    const url = `${API_BASE}/api/files/${userId}/${projectId}/${fileId}`;
+
     try {
-        const { data: fileList, error: listError } = await supabase.storage
-            .from(MEDIA_BUCKET)
-            .list(`${userId}/${projectId}`);
-
-        if (listError) {
-            console.error(`Error listing files:`, listError);
+        // Verify the file exists with a HEAD request
+        const response = await fetch(url, { method: "HEAD" });
+        if (response.ok) {
+            console.log(`File found: ${url}`);
+            return url;
         }
-
-        // Find file that matches the fileId (could be with or without extension)
-        if (fileList && fileList.length > 0) {
-            const matchingFile = fileList.find(f =>
-                f.name === fileId ||
-                f.name.startsWith(fileId + '.') ||
-                f.name === `${fileId}.mp4` ||
-                f.name === `${fileId}.${fileName?.split('.').pop()}`
-            );
-
-            if (matchingFile) {
-                const filePath = `${userId}/${projectId}/${matchingFile.name}`;
-                const { data } = supabase.storage
-                    .from(MEDIA_BUCKET)
-                    .getPublicUrl(filePath);
-                console.log(`Found file, public URL: ${data.publicUrl}`);
-                return data.publicUrl;
-            }
-        }
-
-        // Fallback: construct URL with extension from fileName
-        const extension = fileName?.split('.').pop() || 'mp4';
-        const filePath = `${userId}/${projectId}/${fileId}.${extension}`;
-        console.log(`File not found in list, trying: ${filePath}`);
-
-        const { data } = supabase.storage
-            .from(MEDIA_BUCKET)
-            .getPublicUrl(filePath);
-
-        return data.publicUrl;
+        console.warn(`File not found: ${url} (${response.status})`);
+        return null;
     } catch (error: any) {
         console.error(`Failed to get file URL:`, error);
-
-        // Final fallback
-        const extension = fileName?.split('.').pop() || 'mp4';
-        const filePath = `${userId}/${projectId}/${fileId}.${extension}`;
-        const { data } = supabase.storage
-            .from(MEDIA_BUCKET)
-            .getPublicUrl(filePath);
-        return data.publicUrl;
+        return null;
     }
 };
 
 /**
- * Delete a media file from Supabase Storage
+ * Delete a media file from the backend
  */
 export const deleteMediaFile = async (
     projectId: string,
@@ -151,21 +106,53 @@ export const deleteMediaFile = async (
         throw new Error("User must be authenticated to delete files");
     }
 
-    const filePath = `${userId}/${projectId}/${fileId}`;
+    const url = `${API_BASE}/api/files/${userId}/${projectId}/${fileId}`;
 
     try {
-        const { error } = await supabase.storage
-            .from(MEDIA_BUCKET)
-            .remove([filePath]);
+        const response = await fetch(url, { method: "DELETE" });
 
-        if (error) {
-            console.error(`Failed to delete file: ${filePath}`, error);
-            throw error;
+        if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`Delete failed (${response.status}): ${detail}`);
         }
 
-        console.log(`File deleted from storage: ${filePath}`);
+        console.log(`File deleted: ${fileId}`);
     } catch (error: any) {
-        console.error(`Failed to delete file: ${filePath}`, error);
+        console.error(`Failed to delete file: ${fileId}`, error);
+        throw error;
+    }
+};
+
+/**
+ * Upload an exported video to the backend
+ */
+export const uploadExportedVideo = async (
+    projectId: string,
+    blob: Blob,
+    filename: string,
+): Promise<string> => {
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    formData.append("project_id", projectId);
+    formData.append("filename", filename);
+
+    try {
+        const response = await fetch(`${API_BASE}/api/files/export`, {
+            method: "POST",
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`Export upload failed (${response.status}): ${detail}`);
+        }
+
+        const data = await response.json();
+        const downloadURL = `${API_BASE}${data.url}`;
+        console.log(`Export uploaded: ${downloadURL}`);
+        return downloadURL;
+    } catch (error: any) {
+        console.error("Failed to upload export:", error);
         throw error;
     }
 };
