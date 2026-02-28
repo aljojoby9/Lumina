@@ -67,6 +67,7 @@ class CommandRequest(BaseModel):
     prompt: str
     project_manifest: dict
     current_frame_base64: Optional[str] = None
+    gemini_api_key: Optional[str] = None
 
 
 class CommandResponse(BaseModel):
@@ -109,6 +110,14 @@ async def health():
     """Check server status and list available capabilities."""
     caps = ["command_processing", "video_analysis", "best_moments"]
 
+    # Check if Gemini is available
+    try:
+        from gemini_service import is_gemini_available
+        if is_gemini_available():
+            caps.append("gemini_ai")
+    except Exception:
+        pass
+
     # Check if Vosk is available for speech recognition
     try:
         from subtitle_engine import VOSK_AVAILABLE, _get_vosk_model
@@ -139,6 +148,7 @@ async def command(req: CommandRequest):
             prompt=req.prompt,
             project_manifest=req.project_manifest,
             current_frame_base64=req.current_frame_base64,
+            gemini_api_key=req.gemini_api_key,
         )
         return CommandResponse(**result)
     except Exception as e:
@@ -339,6 +349,110 @@ async def download_export(project_id: str, filename: str):
         media_type="video/webm",
         filename=filename,
     )
+
+
+# ── Video Format Conversion ────────────────────────────────────────────
+
+SUPPORTED_FORMATS = {
+    "mp4": {"ext": ".mp4", "media_type": "video/mp4"},
+    "mov": {"ext": ".mov", "media_type": "video/quicktime"},
+    "avi": {"ext": ".avi", "media_type": "video/x-msvideo"},
+    "mkv": {"ext": ".mkv", "media_type": "video/x-matroska"},
+    "webm": {"ext": ".webm", "media_type": "video/webm"},
+}
+
+
+def _find_ffmpeg() -> Optional[str]:
+    """Find ffmpeg on the system PATH."""
+    import shutil as _shutil
+    return _shutil.which("ffmpeg")
+
+
+@app.post("/api/convert")
+async def convert_video(
+    file: UploadFile = File(...),
+    target_format: str = Form("mp4"),
+    filename: str = Form("export"),
+):
+    """
+    Convert a WebM video to the requested format using FFmpeg.
+    Falls back to returning the original file if FFmpeg is unavailable.
+    """
+    target_format = target_format.lower().strip()
+    if target_format not in SUPPORTED_FORMATS:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {target_format}. Supported: {list(SUPPORTED_FORMATS.keys())}")
+
+    if target_format == "webm":
+        # No conversion needed
+        content = await file.read()
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="video/webm",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.webm"'},
+        )
+
+    # Save uploaded file
+    input_path = _save_upload(file)
+    fmt = SUPPORTED_FORMATS[target_format]
+    output_path = input_path.replace(os.path.splitext(input_path)[1], fmt["ext"])
+
+    ffmpeg_path = _find_ffmpeg()
+    if not ffmpeg_path:
+        # No FFmpeg — return the webm as-is with the requested extension
+        # (many players will still play it)
+        os.rename(input_path, output_path.replace(fmt["ext"], ".webm"))
+        return FileResponse(
+            path=output_path.replace(fmt["ext"], ".webm"),
+            media_type=fmt["media_type"],
+            filename=f"{filename}{fmt['ext']}",
+        )
+
+    try:
+        import subprocess
+        cmd = [
+            ffmpeg_path,
+            "-y",                # Overwrite output
+            "-i", input_path,    # Input file
+            "-c:v", "libx264" if target_format in ("mp4", "mov") else "copy",
+            "-c:a", "aac" if target_format in ("mp4", "mov") else "copy",
+            "-movflags", "+faststart" if target_format in ("mp4", "mov") else "+ignore_editlist",
+            "-preset", "fast",
+            output_path,
+        ]
+        # Clean up movflags for non-mp4/mov formats
+        if target_format not in ("mp4", "mov"):
+            cmd = [
+                ffmpeg_path,
+                "-y",
+                "-i", input_path,
+                "-c:v", "copy",
+                "-c:a", "copy",
+                output_path,
+            ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            print(f"[FFmpeg] Error: {result.stderr[:500]}")
+            # Fallback: return original webm
+            return FileResponse(
+                path=input_path,
+                media_type="video/webm",
+                filename=f"{filename}.webm",
+            )
+
+        return FileResponse(
+            path=output_path,
+            media_type=fmt["media_type"],
+            filename=f"{filename}{fmt['ext']}",
+        )
+    except Exception as e:
+        print(f"[Convert] Error: {e}")
+        return FileResponse(
+            path=input_path,
+            media_type="video/webm",
+            filename=f"{filename}.webm",
+        )
 
 
 # ── Entry point ─────────────────────────────────────────────────────────

@@ -1,16 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { auth } from './firebaseConfig';
 import { onAuthStateChanged } from 'firebase/auth';
-import { Project, UserProfile } from './types';
+import { AppSettings, Project, UserProfile } from './types';
 import Auth from './components/Auth';
 import Dashboard from './components/Dashboard';
 import Editor from './components/Editor';
 import { Loader2 } from 'lucide-react';
+import { defaultAppSettings, getAppSettings, saveAppSettings } from './services/userSettings';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
+  const [appSettings, setAppSettings] = useState<AppSettings>(defaultAppSettings);
+
+  useEffect(() => {
+    setAppSettings(getAppSettings());
+  }, []);
+
+  useEffect(() => {
+    saveAppSettings(appSettings);
+    document.body.classList.remove('theme-dark', 'theme-light');
+    document.body.classList.add(appSettings.theme === 'light' ? 'theme-light' : 'theme-dark');
+  }, [appSettings]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
@@ -50,6 +62,7 @@ const App: React.FC = () => {
       return (
         <Editor 
             project={currentProject} 
+            appSettings={appSettings}
             onBack={() => setCurrentProject(null)} 
         />
       );
@@ -58,6 +71,8 @@ const App: React.FC = () => {
   return (
     <Dashboard 
         user={user} 
+      appSettings={appSettings}
+      onUpdateSettings={setAppSettings}
         onSelectProject={setCurrentProject} 
     />
   );

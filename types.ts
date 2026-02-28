@@ -54,11 +54,25 @@ export interface TimelineClip {
   start: number;
   duration: number;
   offset: number;
+  isMuted?: boolean;
   filter?: FilterType;
   transitionIn?: TransitionType;
   transitionInDuration?: number;
   transitionOut?: TransitionType;
   transitionOutDuration?: number;
+}
+
+export interface AudioClip {
+  id: string;
+  type: 'audio' | 'voiceover';
+  src: string;
+  name: string;
+  start: number;        // When in timeline this audio starts
+  duration: number;     // How long the audio is
+  offset?: number;      // Source offset into the audio file
+  volume?: number;      // 0-1, defaults to 0.8
+  isMuted?: boolean;    // Per-clip mute toggle
+  recordedAt?: number;  // For voice overs, timestamp of recording
 }
 
 export interface Project {
@@ -68,6 +82,7 @@ export interface Project {
   lastModified: number;
   videoState: VideoState;
   clips: TimelineClip[];
+  audioClips?: AudioClip[];  // NEW: audio tracks
   subtitles: Subtitle[];
   messages: ChatMessage[];
   videoName?: string;
@@ -85,6 +100,14 @@ export interface UserProfile {
   uid: string;
   email: string | null;
   displayName: string | null;
+}
+
+export type ExportFormat = 'mp4' | 'webm' | 'mov' | 'avi' | 'mkv';
+export type AppTheme = 'dark' | 'light';
+
+export interface AppSettings {
+  theme: AppTheme;
+  defaultExportFormat: ExportFormat;
 }
 
 // Best Moments Feature Types

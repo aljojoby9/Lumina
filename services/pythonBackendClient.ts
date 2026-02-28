@@ -25,6 +25,7 @@ export async function processUserCommand(
     currentFrameBase64?: string
 ): Promise<AIEngineResponse> {
     try {
+        const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
         const res = await fetch(`${BACKEND_URL}/api/command`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -32,6 +33,7 @@ export async function processUserCommand(
                 prompt,
                 project_manifest: projectManifest,
                 current_frame_base64: currentFrameBase64 || null,
+                gemini_api_key: geminiApiKey || null,
             }),
         });
 

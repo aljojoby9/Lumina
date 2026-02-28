@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, forwardRef, useImperativeHandle, useState, useMemo } from 'react';
+import React, { useRef, useEffect, forwardRef, useImperativeHandle, useState, useMemo, memo } from 'react';
 import { VideoState, Subtitle, TransitionType, FilterType } from '../types';
 import { AlertTriangle, Play, Pause, RefreshCcw } from 'lucide-react';
 
@@ -12,6 +12,7 @@ interface VideoPlayerProps {
   clipStart: number;
   clipDuration: number;
   clipOffset: number;
+  clipMuted?: boolean;
   clipFilter?: FilterType;
   transitionIn?: TransitionType;
   transitionOut?: TransitionType;
@@ -24,7 +25,7 @@ export interface VideoPlayerRef {
   getStream: () => MediaStream | null;
 }
 
-const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
+const VideoPlayerInner = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   src,
   type = 'video',
   videoState,
@@ -33,6 +34,7 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   clipStart,
   clipDuration,
   clipOffset,
+  clipMuted = false,
   clipFilter,
   transitionIn,
   transitionOut,
@@ -87,28 +89,37 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     }
   }));
 
-  // Synchronize video time with timeline
+  // Synchronize video time with timeline — Optimized to avoid unnecessary seeks
+  const lastSeekTimeRef = useRef<number>(-Infinity);
   useEffect(() => {
     if (type !== 'video' || !videoRef.current || !src || hasError) return;
-    const targetTime = (timelineTime - clipStart) + clipOffset;
+    const rawTarget = (timelineTime - clipStart) + clipOffset;
+    const mediaDuration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : Infinity;
+    const targetTime = Math.max(0, Math.min(rawTarget, mediaDuration));
 
-    // Check if the target time is within the video's seekable range and duration
-    // and if the difference is significant enough to require a seek
     const diff = Math.abs(videoRef.current.currentTime - targetTime);
-    if (diff > 0.05 && diff < 1000) { // Avoid extreme jumps or tiny adjustments
+    const now = performance.now();
+
+    // During active playback, only hard-resync if drift becomes noticeable.
+    const driftThreshold = videoState.isPlaying ? 0.35 : 0.05;
+    const seekInterval = videoState.isPlaying ? 300 : 80;
+
+    if (diff > driftThreshold && diff < 1000 && (now - lastSeekTimeRef.current > seekInterval)) {
+      lastSeekTimeRef.current = now;
       try {
-        videoRef.current.currentTime = Math.max(0, targetTime);
+        videoRef.current.currentTime = targetTime;
       } catch (e) {
         console.warn("Seek failed:", e);
       }
     }
-  }, [timelineTime, clipStart, clipOffset, src, hasError, type]);
+  }, [timelineTime, clipStart, clipOffset, src, hasError, type, videoState.isPlaying]);
 
   // Handle Playback State
   useEffect(() => {
     if (type !== 'video' || !videoRef.current || hasError) return;
 
-    videoRef.current.volume = videoState.volume;
+    videoRef.current.muted = clipMuted;
+    videoRef.current.volume = clipMuted ? 0 : videoState.volume;
     videoRef.current.playbackRate = videoState.playbackRate;
 
     const handlePlay = () => {
@@ -128,7 +139,7 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     return () => {
       videoRef.current?.removeEventListener('canplay', handlePlay);
     };
-  }, [videoState.isPlaying, videoState.volume, videoState.playbackRate, src, hasError, type]);
+  }, [videoState.isPlaying, videoState.volume, videoState.playbackRate, src, hasError, type, clipMuted]);
 
   const activeSubtitle = subtitles.find(s =>
     timelineTime >= s.start && timelineTime < (s.start + s.duration)
@@ -160,8 +171,11 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     return filters.join(' ');
   }, [videoState.filter, videoState.brightness, videoState.contrast, videoState.saturation, clipFilter]);
 
+  // Optimize transition calculations for better performance
   const transitionEffect = useMemo(() => {
-    const timeInClip = timelineTime - clipStart;
+    // Round time to nearest 16ms (one frame) to reduce recalculation
+    const roundedTime = Math.round(timelineTime * 60) / 60;
+    const timeInClip = roundedTime - clipStart;
     const timeLeft = clipDuration - timeInClip;
 
     let opacity = 1;
@@ -238,6 +252,7 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
             style={transitionEffect}
             onEnded={onEnded}
             onError={() => setHasError(true)}
+            preload="auto"
             playsInline
             crossOrigin="anonymous"
           />
@@ -272,4 +287,6 @@ const VideoPlayer = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
   );
 });
 
+VideoPlayerInner.displayName = 'VideoPlayer';
+const VideoPlayer = React.memo(VideoPlayerInner);
 export default VideoPlayer;

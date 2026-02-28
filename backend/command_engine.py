@@ -229,9 +229,11 @@ def process_user_command(
     prompt: str,
     project_manifest: dict,
     current_frame_base64: Optional[str] = None,
+    gemini_api_key: Optional[str] = None,
 ) -> dict:
     """
     Main entry point — process user's NL command and return structured actions.
+    Uses rule-based matching first, falls back to Gemini AI for unknown intents.
     Returns: {"actions": [...], "reply": "..."}
     """
     parsed = classify_intent(prompt)
@@ -321,8 +323,22 @@ def process_user_command(
     if parsed["is_best_moments"]:
         replies.append("Analyzing your footage for the best moments... This will take a moment.")
 
-    # Fallback
+    # Fallback — use Gemini AI for unknown / general queries
     if not actions and not replies:
+        try:
+            from gemini_service import ask_gemini
+            gemini_result = ask_gemini(
+                prompt=prompt,
+                project_manifest=project_manifest,
+                api_key=gemini_api_key,
+                current_frame_base64=current_frame_base64,
+            )
+            if gemini_result:
+                return gemini_result
+        except Exception as e:
+            print(f"[CommandEngine] Gemini fallback error: {e}")
+
+        # Ultimate fallback if Gemini is also unavailable
         replies.append(
             f'I understand you want to: "{prompt}". Here are some things I can do:\n'
             '• "Generate a first draft" — auto-edit your footage\n'
@@ -334,5 +350,21 @@ def process_user_command(
             '• "Add subtitles" — auto-generate captions\n'
             '• "Extract best moments" — create a highlight reel'
         )
+
+    # For recognized commands, also try to enhance with Gemini if available
+    if actions and gemini_api_key:
+        try:
+            from gemini_service import ask_gemini
+            gemini_result = ask_gemini(
+                prompt=prompt,
+                project_manifest=project_manifest,
+                api_key=gemini_api_key,
+                current_frame_base64=current_frame_base64,
+            )
+            if gemini_result and gemini_result.get("reply"):
+                # Use Gemini's more natural reply but keep our rule-based actions
+                return {"actions": actions, "reply": gemini_result["reply"]}
+        except Exception:
+            pass  # Stick with our rule-based reply
 
     return {"actions": actions, "reply": " ".join(replies)}

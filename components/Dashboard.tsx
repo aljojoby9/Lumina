@@ -1,22 +1,27 @@
 
 import React, { useEffect, useState, useMemo } from 'react';
-import { Project, UserProfile } from '../types';
+import { AppSettings, ExportFormat, Project, UserProfile } from '../types';
 import { createProject, getUserProjects, deleteProject } from '../services/db';
 import { deleteVideoFromLocal } from '../services/localStore';
-import { Plus, Video, Calendar, Trash2, LogOut, Loader2, ShieldAlert, RefreshCw, AlertTriangle, ExternalLink, Hourglass } from 'lucide-react';
+import { Plus, Video, Calendar, Trash2, LogOut, Loader2, ShieldAlert, RefreshCw, AlertTriangle, ExternalLink, Hourglass, Settings, Sun, Moon, FileVideo } from 'lucide-react';
 import { auth } from '../firebaseConfig';
 
 interface DashboardProps {
     user: UserProfile;
+    appSettings: AppSettings;
+    onUpdateSettings: (settings: AppSettings) => void;
     onSelectProject: (project: Project) => void;
 }
 
 
-const Dashboard: React.FC<DashboardProps> = ({ user, onSelectProject }) => {
+const Dashboard: React.FC<DashboardProps> = ({ user, appSettings, onUpdateSettings, onSelectProject }) => {
     const [projects, setProjects] = useState<Project[]>([]);
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<React.ReactNode | null>(null);
+    const [activeView, setActiveView] = useState<'projects' | 'settings'>('projects');
+
+    const exportFormats: ExportFormat[] = ['mp4', 'webm', 'mov', 'avi', 'mkv'];
 
 
     useEffect(() => {
@@ -225,6 +230,13 @@ service cloud.firestore {
                     <h1 className="text-2xl font-bold text-white">Lumina Dashboard</h1>
                 </div>
                 <div className="flex items-center gap-4">
+                    <button
+                        onClick={() => setActiveView(activeView === 'projects' ? 'settings' : 'projects')}
+                        className="p-2 hover:bg-gray-800 rounded-full text-gray-400 hover:text-white transition-colors"
+                        title="Settings"
+                    >
+                        <Settings size={20} />
+                    </button>
                     <span className="text-gray-400 text-sm">Logged in as <span className="text-white font-medium">{user.displayName || user.email}</span></span>
                     <button
                         onClick={handleLogout}
@@ -237,70 +249,118 @@ service cloud.firestore {
             </div>
 
             <div className="max-w-6xl mx-auto relative z-10">
-                <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-xl font-semibold text-white">Your Projects</h2>
-                    <div className="flex items-center gap-3">
-                        <button
-                            onClick={handleCreate}
-                            disabled={creating || !!error}
-                            className="flex items-center gap-2 px-4 py-2 bg-lumina-600 hover:bg-lumina-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
-                        >
-                            {creating ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
-                            New Project
-                        </button>
-                    </div>
-                </div>
+                {activeView === 'projects' ? (
+                    <>
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-xl font-semibold text-white">Your Projects</h2>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={handleCreate}
+                                    disabled={creating || !!error}
+                                    className="flex items-center gap-2 px-4 py-2 bg-lumina-600 hover:bg-lumina-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                                >
+                                    {creating ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
+                                    New Project
+                                </button>
+                            </div>
+                        </div>
 
-                {error ? (
-                    error
-                ) : loading ? (
-                    <div className="flex justify-center py-20">
-                        <Loader2 size={40} className="text-lumina-500 animate-spin" />
-                    </div>
-                ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {projects.length === 0 ? (
-                            <div className="col-span-full py-20 text-center border-2 border-dashed border-dark-border rounded-xl text-gray-500">
-                                <Video size={48} className="mx-auto mb-4 opacity-50" />
-                                <p className="text-lg font-medium">No projects yet</p>
-                                <p className="text-sm">Create a new project to start editing</p>
+                        {error ? (
+                            error
+                        ) : loading ? (
+                            <div className="flex justify-center py-20">
+                                <Loader2 size={40} className="text-lumina-500 animate-spin" />
                             </div>
                         ) : (
-                            projects.map(project => (
-                                <div
-                                    key={project.id}
-                                    onClick={() => onSelectProject(project)}
-                                    className="group bg-dark-surface border border-dark-border rounded-xl overflow-hidden hover:border-lumina-500/50 transition-all cursor-pointer hover:shadow-xl hover:shadow-lumina-900/10 backdrop-blur-sm"
-                                >
-                                    <div className="aspect-video bg-black/50 relative flex items-center justify-center group-hover:bg-black/40 transition-colors overflow-hidden">
-                                        {project.thumbnail ? (
-                                            <img
-                                                src={project.thumbnail}
-                                                alt={project.name}
-                                                className="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-500"
-                                            />
-                                        ) : (
-                                            <Video size={32} className="text-gray-600 group-hover:text-lumina-400 transition-colors" />
-                                        )}
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {projects.length === 0 ? (
+                                    <div className="col-span-full py-20 text-center border-2 border-dashed border-dark-border rounded-xl text-gray-500">
+                                        <Video size={48} className="mx-auto mb-4 opacity-50" />
+                                        <p className="text-lg font-medium">No projects yet</p>
+                                        <p className="text-sm">Create a new project to start editing</p>
                                     </div>
-                                    <div className="p-4">
-                                        <div className="flex items-start justify-between">
-                                            <h3 className="font-medium text-white group-hover:text-lumina-400 transition-colors truncate pr-4">{project.name}</h3>
-                                            <button
-                                                onClick={(e) => handleDelete(e, project.id)}
-                                                className="text-gray-500 hover:text-red-400 transition-colors p-1"
-                                            >
-                                                <Trash2 size={16} />
-                                            </button>
+                                ) : (
+                                    projects.map(project => (
+                                        <div
+                                            key={project.id}
+                                            onClick={() => onSelectProject(project)}
+                                            className="group bg-dark-surface border border-dark-border rounded-xl overflow-hidden hover:border-lumina-500/50 transition-all cursor-pointer hover:shadow-xl hover:shadow-lumina-900/10 backdrop-blur-sm"
+                                        >
+                                            <div className="aspect-video bg-black/50 relative flex items-center justify-center group-hover:bg-black/40 transition-colors overflow-hidden">
+                                                {project.thumbnail ? (
+                                                    <img
+                                                        src={project.thumbnail}
+                                                        alt={project.name}
+                                                        className="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-500"
+                                                    />
+                                                ) : (
+                                                    <Video size={32} className="text-gray-600 group-hover:text-lumina-400 transition-colors" />
+                                                )}
+                                            </div>
+                                            <div className="p-4">
+                                                <div className="flex items-start justify-between">
+                                                    <h3 className="font-medium text-white group-hover:text-lumina-400 transition-colors truncate pr-4">{project.name}</h3>
+                                                    <button
+                                                        onClick={(e) => handleDelete(e, project.id)}
+                                                        className="text-gray-500 hover:text-red-400 transition-colors p-1"
+                                                    >
+                                                        <Trash2 size={16} />
+                                                    </button>
+                                                </div>
+                                                <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+                                                    <Calendar size={12} />
+                                                    <span>Last edited {new Date(project.lastModified).toLocaleDateString()}</span>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
-                                            <Calendar size={12} />
-                                            <span>Last edited {new Date(project.lastModified).toLocaleDateString()}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))
+                                    ))
+                                )}
+                            </div>
                         )}
+                    </>
+                ) : (
+                    <div className="max-w-2xl bg-dark-surface border border-dark-border rounded-xl p-6 space-y-8">
+                        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+                            <Settings size={20} className="text-lumina-400" /> Settings
+                        </h2>
+
+                        <div className="space-y-3">
+                            <h3 className="text-sm font-bold uppercase tracking-wider text-gray-300">Appearance</h3>
+                            <div className="grid grid-cols-2 gap-3">
+                                <button
+                                    onClick={() => onUpdateSettings({ ...appSettings, theme: 'dark' })}
+                                    className={`p-4 rounded-xl border text-left transition-all ${appSettings.theme === 'dark' ? 'border-lumina-500 bg-lumina-500/10 text-white' : 'border-dark-border text-gray-400 hover:text-white hover:border-gray-600'}`}
+                                >
+                                    <div className="flex items-center gap-2 font-semibold"><Moon size={16} /> Dark</div>
+                                    <p className="text-xs mt-1 opacity-70">Dark editor environment</p>
+                                </button>
+                                <button
+                                    onClick={() => onUpdateSettings({ ...appSettings, theme: 'light' })}
+                                    className={`p-4 rounded-xl border text-left transition-all ${appSettings.theme === 'light' ? 'border-lumina-500 bg-lumina-500/10 text-white' : 'border-dark-border text-gray-400 hover:text-white hover:border-gray-600'}`}
+                                >
+                                    <div className="flex items-center gap-2 font-semibold"><Sun size={16} /> Light</div>
+                                    <p className="text-xs mt-1 opacity-70">Bright dashboard/editor look</p>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3">
+                            <h3 className="text-sm font-bold uppercase tracking-wider text-gray-300">Export Defaults</h3>
+                            <div className="bg-black/20 border border-dark-border rounded-xl p-4">
+                                <label className="text-xs text-gray-400 block mb-2">Default Export Format</label>
+                                <div className="grid grid-cols-5 gap-2">
+                                    {exportFormats.map((format) => (
+                                        <button
+                                            key={format}
+                                            onClick={() => onUpdateSettings({ ...appSettings, defaultExportFormat: format })}
+                                            className={`py-2 rounded-lg border text-xs font-bold uppercase transition-all ${appSettings.defaultExportFormat === format ? 'bg-lumina-600 border-lumina-500 text-white' : 'border-dark-border text-gray-400 hover:text-white hover:border-gray-500'}`}
+                                        >
+                                            <span className="flex items-center justify-center gap-1"><FileVideo size={12} /> {format}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 )}
             </div>
