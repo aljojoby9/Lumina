@@ -296,6 +296,110 @@ def generate_best_moments_edit(
     }]
 
 
+def generate_thumbnail_candidates(
+    video_path: str,
+    num_candidates: int = 8,
+    return_top: int = 5,
+) -> list[dict]:
+    """
+    Extract the best candidate frames for thumbnail selection.
+
+    Strategy:
+      - Skip the first 5 % and last 5 % of the video (usually intros/outros/black).
+      - Sample at least 20 positions evenly across the usable range.
+      - Score each frame with OpenCV metrics (brightness, contrast, colorfulness,
+        edge density, motion).
+      - Return the top `return_top` frames encoded as full-resolution JPEG at
+        quality 95, plus a downscaled copy (640×360) for Gemini vision evaluation.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps if fps > 0 else 0
+
+    # Usable range — skip 5 % head and tail
+    start_t = duration * 0.05
+    end_t   = duration * 0.95
+    if end_t - start_t < 1.0:          # Very short clip — use everything
+        start_t = 0.0
+        end_t   = duration
+
+    sample_count = max(num_candidates * 3, 20)   # Oversample, then pick best
+    interval = max(0.5, (end_t - start_t) / sample_count)
+
+    candidates: list[dict] = []
+    prev_gray: Optional[np.ndarray] = None
+    t = start_t
+
+    while t <= end_t:
+        frame_no = int(t * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Score on a small copy for speed
+        frame_small = cv2.resize(frame, (640, 360))
+        gray = cv2.cvtColor(frame_small, cv2.COLOR_BGR2GRAY)
+        stats = compute_frame_stats(frame_small, prev_gray)
+        score = score_frame(stats)
+
+        candidates.append({
+            "timestamp": round(t, 2),
+            "score": score,
+            "stats": stats,
+            "frame": frame,          # Full-resolution BGR frame
+        })
+
+        prev_gray = gray
+        t += interval
+
+    cap.release()
+
+    if not candidates:
+        raise ValueError("No frames could be extracted from the video")
+
+    # Pick the top-N by OpenCV score
+    top = sorted(candidates, key=lambda x: x["score"], reverse=True)[:return_top]
+
+    result: list[dict] = []
+    for item in top:
+        frame = item["frame"]
+        h, w = frame.shape[:2]
+
+        # Cap resolution at 1920×1080 (keeps file sizes manageable while staying HD)
+        max_w, max_h = 1920, 1080
+        if w > max_w or h > max_h:
+            scale = min(max_w / w, max_h / h)
+            frame = cv2.resize(
+                frame,
+                (int(w * scale), int(h * scale)),
+                interpolation=cv2.INTER_LANCZOS4,
+            )
+
+        # Full-resolution JPEG (quality 95) for final output
+        _, buf_full = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        b64_full = base64.b64encode(buf_full).decode("utf-8")
+
+        # Downscaled copy for Gemini (640×360, quality 85) — keeps payload small
+        frame_gem = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
+        _, buf_gem = cv2.imencode(".jpg", frame_gem, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        b64_gem = base64.b64encode(buf_gem).decode("utf-8")
+
+        result.append({
+            "timestamp":          item["timestamp"],
+            "score":              item["score"],
+            "reason":             describe_frame(item["stats"], item["score"]),
+            "image_base64":       b64_full,   # Full-res — returned to the frontend
+            "image_small_base64": b64_gem,    # Gemini-eval copy
+        })
+
+    return result
+
+
 def extract_best_moments(
     video_path: str,
     config: dict | None = None,

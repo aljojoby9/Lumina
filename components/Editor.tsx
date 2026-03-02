@@ -14,7 +14,7 @@ import { VideoState, ChatMessage, TimelineClip, Project, AIAction, Subtitle, Fil
 import { processUserCommand } from '../services/pythonBackendClient';
 import { saveProject } from '../services/db';
 import { uploadMediaFile, getMediaFileURL, uploadExportedVideo } from '../services/storageService';
-import { extractBestMoments } from '../services/pythonBackendClient';
+import { extractBestMoments, generateThumbnailViaBackend } from '../services/pythonBackendClient';
 import { generateSubtitles } from '../services/pythonBackendClient';
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
@@ -1240,212 +1240,52 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
         }
 
         setIsGeneratingThumbnail(true);
-        setThumbnailStatus('AI is scanning the whole video for the best scene...');
+        setThumbnailStatus('AI is scanning the entire video for the best scene...');
 
         try {
-            const seekVideo = async (video: HTMLVideoElement, timestamp: number, errorMessage: string) => {
-                await new Promise<void>((resolve, reject) => {
-                    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Math.max(0.1, timestamp + 0.1);
-                    const maxSeek = Math.max(0, duration - 0.05);
-                    const target = Math.max(0, Math.min(timestamp, maxSeek));
+            // ── Pick the clip that covers the most timeline time ──────────────
+            // (longest clip is most likely to have interesting content)
+            const primaryClip = videoClips.reduce(
+                (best, c) => (c.duration > best.duration ? c : best),
+                videoClips[0]
+            );
 
-                    if (Math.abs(video.currentTime - target) < 0.03) {
-                        resolve();
-                        return;
-                    }
-
-                    let settled = false;
-                    const cleanup = () => {
-                        video.removeEventListener('seeked', onSeeked);
-                        video.removeEventListener('error', onError);
-                        window.clearTimeout(timeoutId);
-                    };
-
-                    const onSeeked = () => {
-                        if (settled) return;
-                        settled = true;
-                        cleanup();
-                        resolve();
-                    };
-
-                    const onError = () => {
-                        if (settled) return;
-                        settled = true;
-                        cleanup();
-                        reject(new Error(errorMessage));
-                    };
-
-                    const timeoutId = window.setTimeout(() => {
-                        if (settled) return;
-                        settled = true;
-                        cleanup();
-                        if (Math.abs(video.currentTime - target) < 0.08) {
-                            resolve();
-                        } else {
-                            reject(new Error(errorMessage));
-                        }
-                    }, 2500);
-
-                    video.addEventListener('seeked', onSeeked, { once: true });
-                    video.addEventListener('error', onError, { once: true });
-                    try {
-                        video.currentTime = target;
-                    } catch {
-                        onError();
-                    }
-                });
-            };
-
-            const scoreCurrentFrame = (video: HTMLVideoElement) => {
-                const tiny = document.createElement('canvas');
-                tiny.width = 160;
-                tiny.height = 90;
-                const tctx = tiny.getContext('2d');
-                if (!tctx) return 0;
-                tctx.drawImage(video, 0, 0, tiny.width, tiny.height);
-                const data = tctx.getImageData(0, 0, tiny.width, tiny.height).data;
-
-                let sum = 0;
-                let sumSq = 0;
-                for (let i = 0; i < data.length; i += 4) {
-                    const y = (0.2126 * data[i]) + (0.7152 * data[i + 1]) + (0.0722 * data[i + 2]);
-                    sum += y;
-                    sumSq += y * y;
-                }
-                const n = data.length / 4;
-                const mean = sum / n;
-                const variance = Math.max(0, (sumSq / n) - (mean * mean));
-                const stdev = Math.sqrt(variance);
-
-                const darkPenalty = mean < 45 ? (45 - mean) * 2 : 0;
-                return (stdev * 2 + mean) - darkPenalty;
-            };
-
-            let bestSelection: {
-                clip: TimelineClip;
-                sourceTimestamp: number;
-                timelineTimestamp: number;
-                combinedScore: number;
-            } | null = null;
-
-            for (let index = 0; index < videoClips.length; index += 1) {
-                const sourceClip = videoClips[index];
-                setThumbnailStatus(`AI scanning clip ${index + 1}/${videoClips.length}...`);
-
-                const tempVideo = document.createElement('video');
-                tempVideo.src = sourceClip.src;
-                tempVideo.crossOrigin = 'anonymous';
-                tempVideo.preload = 'metadata';
-                tempVideo.muted = true;
-
-                await new Promise<void>((resolve, reject) => {
-                    tempVideo.onloadedmetadata = () => resolve();
-                    tempVideo.onerror = () => reject(new Error('Could not load video for thumbnail generation'));
-                });
-
-                const mediaDuration = Number.isFinite(tempVideo.duration) && tempVideo.duration > 0 ? tempVideo.duration : (sourceClip.offset + sourceClip.duration);
-                const clipStartInSource = Math.max(0, Math.min(sourceClip.offset, mediaDuration));
-                const clipEndInSource = Math.max(clipStartInSource + 0.05, Math.min(sourceClip.offset + sourceClip.duration, mediaDuration));
-                const clipRange = Math.max(0.05, clipEndInSource - clipStartInSource);
-                const margin = Math.min(0.8, Math.max(0.02, clipRange * 0.15));
-                const safeStart = Math.max(0, Math.min(clipStartInSource + margin, clipEndInSource - 0.02));
-                const safeEnd = Math.max(safeStart + 0.02, Math.min(clipEndInSource - 0.02, mediaDuration));
-
-                let clipBestTimestamp = safeStart + Math.max(0, (safeEnd - safeStart) * 0.5);
-                let clipBestScore = Number.NEGATIVE_INFINITY;
-
-                try {
-                    const analysis = await extractBestMoments(tempVideo, {
-                        targetDuration: 12,
-                        samplingInterval: 20,
-                        minClipLength: 2,
-                        maxClipLength: 5,
-                    }, (_, status) => {
-                        if (status) setThumbnailStatus(`AI scanning clip ${index + 1}/${videoClips.length}: ${status}`);
-                    });
-
-                    const insideClip = (analysis.moments || [])
-                        .filter(m => m.timestamp >= safeStart && m.timestamp <= safeEnd)
-                        .sort((a, b) => b.interestScore - a.interestScore)
-                        .slice(0, 10);
-
-                    for (const moment of insideClip) {
-                        try {
-                            await seekVideo(tempVideo, moment.timestamp, 'Failed to seek candidate frame');
-                        } catch {
-                            continue;
-                        }
-                        const visualScore = scoreCurrentFrame(tempVideo);
-                        const combined = (moment.interestScore * 100) + visualScore;
-                        if (combined > clipBestScore) {
-                            clipBestScore = combined;
-                            clipBestTimestamp = moment.timestamp;
-                        }
-                    }
-                } catch (aiErr) {
-                    console.warn('AI scene analysis failed for clip, using visual fallback:', aiErr);
-                }
-
-                if (!Number.isFinite(clipBestScore) || clipBestScore === Number.NEGATIVE_INFINITY) {
-                    const sampleCount = 12;
-                    const range = Math.max(0.02, safeEnd - safeStart);
-                    for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
-                        const ratio = sampleIndex / (sampleCount - 1);
-                        const ts = safeStart + (range * ratio);
-                        try {
-                            await seekVideo(tempVideo, ts, 'Failed to seek fallback frame');
-                        } catch {
-                            continue;
-                        }
-                        const visualScore = scoreCurrentFrame(tempVideo);
-                        if (visualScore > clipBestScore) {
-                            clipBestScore = visualScore;
-                            clipBestTimestamp = ts;
-                        }
-                    }
-                }
-
-                const timelineTimestamp = sourceClip.start + Math.max(0, clipBestTimestamp - sourceClip.offset);
-                if (!bestSelection || clipBestScore > bestSelection.combinedScore) {
-                    bestSelection = {
-                        clip: sourceClip,
-                        sourceTimestamp: clipBestTimestamp,
-                        timelineTimestamp,
-                        combinedScore: clipBestScore,
-                    };
-                }
-            }
-
-            if (!bestSelection) {
-                throw new Error('Unable to find a suitable frame for thumbnail generation.');
-            }
-
-            const selectedVideo = document.createElement('video');
-            selectedVideo.src = bestSelection.clip.src;
-            selectedVideo.crossOrigin = 'anonymous';
-            selectedVideo.preload = 'metadata';
+            // ── Load the video so we can pass it to the backend ──────────────
+            const tempVideo = document.createElement('video');
+            tempVideo.src = primaryClip.src;
+            tempVideo.muted = true;
+            tempVideo.preload = 'metadata';
 
             await new Promise<void>((resolve, reject) => {
-                selectedVideo.onloadedmetadata = () => resolve();
-                selectedVideo.onerror = () => reject(new Error('Could not load selected clip for thumbnail rendering'));
+                tempVideo.onloadedmetadata = () => resolve();
+                tempVideo.onerror = () => reject(new Error('Could not load video for thumbnail generation'));
             });
 
-            const boundedSelectedTimestamp = Math.max(0, Math.min(bestSelection.sourceTimestamp, (selectedVideo.duration || bestSelection.sourceTimestamp)));
-            await seekVideo(selectedVideo, boundedSelectedTimestamp, 'Failed to seek to AI-selected scene');
+            const geminiApiKey = (import.meta.env.VITE_GEMINI_API_KEY as string) || '';
+            const videoContext = `Project "${projectName}" — clip starts at ${primaryClip.offset.toFixed(1)}s in source, duration ${primaryClip.duration.toFixed(1)}s.`;
 
-            const frameCanvas = document.createElement('canvas');
-            frameCanvas.width = selectedVideo.videoWidth || 1280;
-            frameCanvas.height = selectedVideo.videoHeight || 720;
-            const frameCtx = frameCanvas.getContext('2d');
-            if (!frameCtx) throw new Error('Canvas context unavailable');
-            frameCtx.drawImage(selectedVideo, 0, 0, frameCanvas.width, frameCanvas.height);
-            const baseFrame = frameCanvas.toDataURL('image/jpeg', 0.92);
+            // ── Call backend: OpenCV scoring + Gemini Vision selection ────────
+            const result = await generateThumbnailViaBackend(
+                tempVideo,
+                { numCandidates: 8, geminiApiKey, videoContext },
+                (status) => setThumbnailStatus(status),
+            );
 
-            setThumbnailBaseFrame(baseFrame);
-            setThumbnailStatus(`AI selected the best scene at ${bestSelection.timelineTimestamp.toFixed(1)}s on your timeline. Edit and save your thumbnail.`);
+            // ── Set full-resolution frame as the thumbnail base ───────────────
+            setThumbnailBaseFrame(result.dataUrl);
+
+            const who    = result.gemini_reason && !result.gemini_reason.startsWith('Selected by visual')
+                ? 'Gemini AI'
+                : 'visual analysis';
+            const tl     = (primaryClip.start + Math.max(0, result.timestamp - primaryClip.offset)).toFixed(1);
+            setThumbnailStatus(
+                `${who} selected the best scene at ~${tl}s on your timeline. ` +
+                `Reason: ${result.gemini_reason || result.reason}. ` +
+                'Adjust settings below and save your thumbnail.'
+            );
         } catch (err: any) {
             console.error('Thumbnail AI generation failed:', err);
-            setThumbnailStatus(err.message || 'Failed to generate thumbnail.');
+            setThumbnailStatus(err.message || 'Failed to generate thumbnail. Is the Python backend running?');
         } finally {
             setIsGeneratingThumbnail(false);
         }

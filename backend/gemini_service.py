@@ -198,3 +198,118 @@ def is_gemini_available(api_key: Optional[str] = None) -> bool:
     """Check if Gemini can be used."""
     key = api_key or os.environ.get("GEMINI_API_KEY", "")
     return bool(key)
+
+
+# ── Thumbnail Selection ─────────────────────────────────────────────────
+
+def select_best_thumbnail(
+    candidates: list[dict],
+    video_context: str = "",
+    api_key: Optional[str] = None,
+) -> dict:
+    """
+    Use Gemini Vision to choose the most engaging thumbnail frame from candidates.
+
+    Each candidate must contain:
+      - 'image_small_base64': base64-encoded JPEG (640×360) for Gemini
+      - 'timestamp', 'score', 'reason': metadata from OpenCV analysis
+
+    Returns the winning candidate dict with extra keys:
+      - 'gemini_reason' : Gemini's explanation for the choice
+      - 'gemini_selected_index' : 0-based index into candidates
+    """
+    if not candidates:
+        raise ValueError("No candidates provided")
+
+    key = api_key or os.environ.get("GEMINI_API_KEY", "")
+    if not key:
+        # No Gemini key — fall back to the highest-scored candidate
+        best = max(candidates, key=lambda c: c["score"])
+        return {**best, "gemini_reason": "Selected by visual quality score (no Gemini key)", "gemini_selected_index": candidates.index(best)}
+
+    context_line = f" Video context: {video_context}." if video_context else ""
+
+    instruction = (
+        f"You are an expert YouTube thumbnail designer.{context_line}\n\n"
+        f"I am showing you {len(candidates)} candidate frames extracted from a video. "
+        "Pick the single frame that would make the MOST compelling, click-worthy thumbnail.\n\n"
+        "Evaluate each frame on:\n"
+        "  1. Visual sharpness and clarity — not blurry, not mid-transition, not black/white flash.\n"
+        "  2. Emotional impact — faces with strong expression, dramatic action, exciting moment.\n"
+        "  3. Color vibrancy — bright, well-lit, saturated. Avoid dull, dark, or washed-out frames.\n"
+        "  4. Composition — subject is prominent and well-framed, occupies meaningful screen space.\n"
+        "  5. Storytelling — captures the essence or a peak moment of the video.\n\n"
+        "Each frame is labelled Frame 1, Frame 2, … in order.\n"
+        "Respond with ONLY a JSON object, no markdown, no explanation outside JSON:\n"
+        '{"selected": <1-based frame number>, "reason": "<one sentence why this frame wins>"}'
+    )
+
+    parts: list[dict] = [{"text": instruction}]
+    for i, candidate in enumerate(candidates):
+        parts.append({
+            "text": (
+                f"Frame {i + 1} — timestamp {candidate['timestamp']}s, "
+                f"OpenCV quality score {candidate['score']}/10 ({candidate.get('reason', '')}):"
+            )
+        })
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": candidate["image_small_base64"],
+            }
+        })
+
+    request_body = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 256,
+        },
+    }
+
+    vision_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+
+    try:
+        response = None
+        for model_name in vision_models:
+            url = f"{GEMINI_API_BASE}/{model_name}:generateContent?key={key}"
+            try:
+                response = httpx.post(
+                    url,
+                    json=request_body,
+                    headers={"Content-Type": "application/json"},
+                    timeout=60.0,
+                )
+                if response.status_code == 200:
+                    break
+                print(f"[Gemini Thumbnail] {response.status_code} on {model_name}: {response.text[:120]}")
+            except httpx.TimeoutException:
+                print(f"[Gemini Thumbnail] Timeout on {model_name}")
+
+        if response is None or response.status_code != 200:
+            best = max(candidates, key=lambda c: c["score"])
+            return {**best, "gemini_reason": "Gemini unavailable — using top-scored frame", "gemini_selected_index": candidates.index(best)}
+
+        data = response.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+        # Strip markdown fences if present
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+
+        parsed = json.loads(text)
+        idx = max(0, min(int(parsed.get("selected", 1)) - 1, len(candidates) - 1))
+        reason = parsed.get("reason", "Selected by Gemini AI")
+
+        print(f"[Gemini Thumbnail] Selected Frame {idx + 1} at {candidates[idx]['timestamp']}s — {reason}")
+        return {**candidates[idx], "gemini_reason": reason, "gemini_selected_index": idx}
+
+    except json.JSONDecodeError as e:
+        print(f"[Gemini Thumbnail] JSON parse error: {e} | raw: {text[:200]}")
+        best = max(candidates, key=lambda c: c["score"])
+        return {**best, "gemini_reason": "Parse error — using top-scored frame", "gemini_selected_index": candidates.index(best)}
+    except Exception as e:
+        print(f"[Gemini Thumbnail] Error: {e}")
+        best = max(candidates, key=lambda c: c["score"])
+        return {**best, "gemini_reason": f"Error fallback: {e}", "gemini_selected_index": candidates.index(best)}

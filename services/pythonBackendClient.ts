@@ -179,6 +179,73 @@ export async function generateSubtitles(
 }
 
 
+// ── Thumbnail Generation ──────────────────────────────────────────────
+
+export interface ThumbnailResult {
+    timestamp: number;
+    score: number;
+    reason: string;
+    gemini_reason: string;
+    /** Full-resolution JPEG encoded as a data-URL (data:image/jpeg;base64,...) */
+    dataUrl: string;
+}
+
+/**
+ * Generate a high-quality thumbnail from a video element by:
+ *   1. Sending the video to the Python backend for OpenCV frame scoring.
+ *   2. Having Gemini Vision evaluate the top candidates and pick the best frame.
+ *   3. Returning the winning frame as a full-resolution data-URL.
+ */
+export async function generateThumbnailViaBackend(
+    videoElement: HTMLVideoElement,
+    config: {
+        numCandidates?: number;
+        geminiApiKey?: string;
+        videoContext?: string;
+    } = {},
+    onProgress?: (status: string) => void,
+): Promise<ThumbnailResult> {
+    onProgress?.("Fetching video data...");
+
+    const response = await fetch(videoElement.src);
+    if (!response.ok) throw new Error("Could not fetch video for thumbnail generation");
+
+    const blob = await response.blob();
+    const file = new File([blob], "video.mp4", { type: blob.type || "video/mp4" });
+
+    onProgress?.("Uploading to AI engine...");
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("num_candidates", String(config.numCandidates ?? 8));
+    formData.append("gemini_api_key", config.geminiApiKey ?? "");
+    formData.append("video_context", config.videoContext ?? "");
+
+    onProgress?.("Analyzing frames with OpenCV + Gemini Vision...");
+
+    const res = await fetch(`${BACKEND_URL}/api/thumbnail`, {
+        method: "POST",
+        body: formData,
+    });
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || "Thumbnail generation failed");
+    }
+
+    onProgress?.("Processing best frame...");
+    const data = await res.json();
+
+    return {
+        timestamp:    data.timestamp,
+        score:        data.score,
+        reason:       data.reason,
+        gemini_reason: data.gemini_reason,
+        dataUrl:      `data:image/jpeg;base64,${data.image_base64}`,
+    };
+}
+
+
 // ── Health Check ──────────────────────────────────────────────────────
 
 export async function checkBackendHealth(): Promise<{

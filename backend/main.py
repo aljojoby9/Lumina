@@ -29,8 +29,9 @@ from pydantic import BaseModel
 from typing import Optional
 
 from command_engine import process_user_command
-from video_analysis import extract_best_moments, analyze_frames_for_highlights, extract_keyframes
+from video_analysis import extract_best_moments, analyze_frames_for_highlights, extract_keyframes, generate_thumbnail_candidates
 from subtitle_engine import generate_subtitles
+from gemini_service import select_best_thumbnail
 
 app = FastAPI(
     title="Lumina AI Engine",
@@ -84,6 +85,14 @@ class AnalysisResponse(BaseModel):
 class SubtitleResponse(BaseModel):
     subtitles: list[dict]
     summary: str
+
+
+class ThumbnailResponse(BaseModel):
+    timestamp: float
+    score: int
+    reason: str
+    gemini_reason: str
+    image_base64: str      # Full-resolution JPEG encoded as base64
 
 
 class HealthResponse(BaseModel):
@@ -208,6 +217,64 @@ async def subtitles(
         return SubtitleResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(video_path):
+            os.unlink(video_path)
+
+
+# ── Thumbnail Generation ──────────────────────────────────────────────────
+
+@app.post("/api/thumbnail", response_model=ThumbnailResponse)
+async def generate_thumbnail(
+    file: UploadFile = File(...),
+    gemini_api_key: str = Form(""),
+    video_context: str = Form(""),
+    num_candidates: int = Form(8),
+):
+    """
+    Analyze a video and select the best thumbnail frame.
+
+    Pipeline:
+      1. OpenCV scans the video and scores every frame on brightness, contrast,
+         colorfulness, edge-density, and motion (Sobel + Farneback optical flow).
+      2. The top `num_candidates` frames are passed to Gemini Vision, which
+         evaluates each image and picks the most compelling thumbnail.
+      3. The winning frame is returned as a full-resolution JPEG (up to 1920×1080).
+
+    Returns a JSON object with the image as base64, the timestamp, and
+    Gemini's explanation for its choice.
+    """
+    video_path = _save_upload(file)
+    try:
+        # Step 1: OpenCV candidate extraction
+        candidates = generate_thumbnail_candidates(
+            video_path,
+            num_candidates=max(5, num_candidates),
+            return_top=min(6, max(3, num_candidates)),
+        )
+
+        if not candidates:
+            raise HTTPException(status_code=422, detail="No suitable frames found in video")
+
+        # Step 2: Gemini Vision frame selection
+        best = select_best_thumbnail(
+            candidates,
+            video_context=video_context or "",
+            api_key=gemini_api_key or None,
+        )
+
+        return ThumbnailResponse(
+            timestamp=best["timestamp"],
+            score=int(best["score"]),
+            reason=best["reason"],
+            gemini_reason=best.get("gemini_reason", ""),
+            image_base64=best["image_base64"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     finally:
         if os.path.exists(video_path):
             os.unlink(video_path)
