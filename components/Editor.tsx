@@ -1147,8 +1147,9 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                                 <div class="label">Title</div>
                                 <input id="titleInput" class="input" placeholder="Enter title" />
                             </div>
-                            <div class="row">
+                            <div class="row" style="grid-template-columns: 1fr 1fr 1fr;">
                                 <button id="generateBtn" class="btn btn-primary">AI Generate</button>
+                                <button id="downloadBtn" class="btn btn-ghost">Download JPEG</button>
                                 <button id="saveBtn" class="btn btn-success">Save Thumbnail</button>
                             </div>
                             <div class="status" id="statusText">Ready.</div>
@@ -1161,6 +1162,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                             }
                         };
                         document.getElementById('generateBtn')?.addEventListener('click', () => send('GENERATE'));
+                        document.getElementById('downloadBtn')?.addEventListener('click', () => send('DOWNLOAD'));
                         document.getElementById('saveBtn')?.addEventListener('click', () => send('SAVE'));
                         document.getElementById('closeBtn')?.addEventListener('click', () => send('CLOSE'));
                         document.getElementById('platformSelect')?.addEventListener('change', (e) => send('SET_PLATFORM', { platform: e.target.value }));
@@ -1193,6 +1195,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
         const platformSelect = win.document.getElementById('platformSelect') as HTMLSelectElement | null;
         const titleInput = win.document.getElementById('titleInput') as HTMLInputElement | null;
         const generateBtn = win.document.getElementById('generateBtn') as HTMLButtonElement | null;
+        const downloadBtn = win.document.getElementById('downloadBtn') as HTMLButtonElement | null;
         const saveBtn = win.document.getElementById('saveBtn') as HTMLButtonElement | null;
         if (!img || !hint) return;
 
@@ -1218,6 +1221,9 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
         if (generateBtn) {
             generateBtn.disabled = isGeneratingThumbnail;
             generateBtn.textContent = isGeneratingThumbnail ? 'Generating...' : 'AI Generate';
+        }
+        if (downloadBtn) {
+            downloadBtn.disabled = !thumbnailPreview;
         }
         if (saveBtn) {
             saveBtn.disabled = !thumbnailPreview;
@@ -1312,6 +1318,53 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
         }
     };
 
+    const handleDownloadThumbnailAsJpeg = async () => {
+        if (!thumbnailPreview) {
+            setThumbnailStatus('Generate a thumbnail first.');
+            return;
+        }
+
+        try {
+            const image = new Image();
+            image.crossOrigin = 'anonymous';
+
+            await new Promise<void>((resolve, reject) => {
+                image.onload = () => resolve();
+                image.onerror = () => reject(new Error('Failed to load thumbnail for download.'));
+                image.src = thumbnailPreview;
+            });
+
+            const canvas = document.createElement('canvas');
+            const width = image.naturalWidth || THUMBNAIL_PRESETS[thumbnailPlatform].width;
+            const height = image.naturalHeight || THUMBNAIL_PRESETS[thumbnailPlatform].height;
+            canvas.width = width;
+            canvas.height = height;
+
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                throw new Error('Canvas is not available in this browser.');
+            }
+
+            ctx.drawImage(image, 0, 0, width, height);
+            const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+
+            const baseName = (projectName || 'lumina-thumbnail')
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '') || 'lumina-thumbnail';
+
+            const link = document.createElement('a');
+            link.href = jpegDataUrl;
+            link.download = `${baseName}.jpg`;
+            link.click();
+
+            setThumbnailStatus('Thumbnail downloaded as JPEG.');
+        } catch (err: any) {
+            setThumbnailStatus(err.message || 'Failed to download thumbnail as JPEG.');
+        }
+    };
+
     useEffect(() => {
         const onMessage = (event: MessageEvent) => {
             const data = event.data;
@@ -1323,6 +1376,9 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                     break;
                 case 'SAVE':
                     void handleSaveThumbnail();
+                    break;
+                case 'DOWNLOAD':
+                    void handleDownloadThumbnailAsJpeg();
                     break;
                 case 'CLOSE':
                     handleCloseThumbnailStudio();
@@ -1342,7 +1398,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
 
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
-    }, [handleGenerateThumbnailWithAI, thumbnailPreview, thumbnailPlatform, thumbnailTitle]);
+    }, [handleGenerateThumbnailWithAI, handleSaveThumbnail, handleDownloadThumbnailAsJpeg, thumbnailPreview, thumbnailPlatform, thumbnailTitle]);
 
     const handleExportClick = () => {
         if (clips.length === 0) return;
@@ -2222,6 +2278,15 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                                                     >
                                                         {isGeneratingThumbnail ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
                                                         AI Generate from Scene
+                                                    </button>
+
+                                                    <button
+                                                        onClick={handleDownloadThumbnailAsJpeg}
+                                                        disabled={!thumbnailPreview}
+                                                        className="w-full py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl font-black uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                                                    >
+                                                        <Download size={16} />
+                                                        Download JPEG
                                                     </button>
 
                                                     <div>

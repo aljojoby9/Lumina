@@ -91,8 +91,20 @@ const VideoPlayerInner = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
 
   // Synchronize video time with timeline — Optimized to avoid unnecessary seeks
   const lastSeekTimeRef = useRef<number>(-Infinity);
+  const lastClipSyncKeyRef = useRef<string>('');
   useEffect(() => {
     if (type !== 'video' || !videoRef.current || !src || hasError) return;
+
+    const currentClipSyncKey = `${src}|${clipStart}|${clipOffset}`;
+    const clipChanged = lastClipSyncKeyRef.current !== currentClipSyncKey;
+    if (clipChanged) {
+      lastClipSyncKeyRef.current = currentClipSyncKey;
+    }
+
+    if (videoState.isPlaying && !clipChanged) {
+      return;
+    }
+
     const rawTarget = (timelineTime - clipStart) + clipOffset;
     const mediaDuration = Number.isFinite(videoRef.current.duration) ? videoRef.current.duration : Infinity;
     const targetTime = Math.max(0, Math.min(rawTarget, mediaDuration));
@@ -100,9 +112,8 @@ const VideoPlayerInner = forwardRef<VideoPlayerRef, VideoPlayerProps>(({
     const diff = Math.abs(videoRef.current.currentTime - targetTime);
     const now = performance.now();
 
-    // During active playback, only hard-resync if drift becomes noticeable.
-    const driftThreshold = videoState.isPlaying ? 0.35 : 0.05;
-    const seekInterval = videoState.isPlaying ? 300 : 80;
+    const driftThreshold = clipChanged ? 0.02 : 0.05;
+    const seekInterval = clipChanged ? 0 : 80;
 
     if (diff > driftThreshold && diff < 1000 && (now - lastSeekTimeRef.current > seekInterval)) {
       lastSeekTimeRef.current = now;
