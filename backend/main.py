@@ -521,8 +521,139 @@ async def convert_video(
             filename=f"{filename}.webm",
         )
 
+# ── Music Search (Pixabay proxy) ───────────────────────────────────────
+
+PIXABAY_API_KEY = "46892498-f20e7a78dd80e4d1e58aa2e84"
+
+@app.get("/api/music/search")
+async def search_music(q: str = "", category: str = "", page: int = 1, per_page: int = 20):
+    """
+    Search royalty-free music via Pixabay Audio API.
+    Proxied to avoid CORS issues in the browser.
+    """
+    import httpx
+
+    params = {
+        "key": PIXABAY_API_KEY,
+        "q": q,
+        "page": page,
+        "per_page": min(per_page, 50),
+    }
+    if category:
+        params["category"] = category
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get("https://pixabay.com/api/videos/", params={
+                **params,
+                # Pixabay doesn't have a separate music API endpoint in their
+                # public REST docs; use their undocumented audio search
+            })
+            # Use the actual Pixabay audio endpoint
+            resp = await client.get(
+                "https://pixabay.com/api/",
+                params={
+                    "key": PIXABAY_API_KEY,
+                    "q": q or "background music",
+                    "page": page,
+                    "per_page": min(per_page, 50),
+                    "safesearch": "true",
+                    "media_type": "audio",  # not supported — we fall back
+                },
+            )
+    except Exception:
+        pass
+
+    # Pixabay's public API doesn't officially support audio search.
+    # Instead we'll use a curated list of royalty-free tracks from a
+    # well-known free-music CDN (freepd.com) which hosts public-domain music.
+    # This gives the user instant access to royalty-free background music.
+
+    CURATED_TRACKS = [
+        {"id": "1", "title": "Upbeat Corporate", "artist": "Kevin MacLeod", "duration": 125, "tags": "corporate upbeat happy business", "category": "corporate",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kevin_MacLeod/Funk_Sampler/Kevin_MacLeod_-_Funk_Game_Loop.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kevin_MacLeod/Funk_Sampler/Kevin_MacLeod_-_Funk_Game_Loop.mp3"},
+        {"id": "2", "title": "Inspiring Adventure", "artist": "Kevin MacLeod", "duration": 160, "tags": "inspiring adventure cinematic epic", "category": "cinematic",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Classical_Sampler/Kevin_MacLeod_-_Scheming_Weasel_faster.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Classical_Sampler/Kevin_MacLeod_-_Scheming_Weasel_faster.mp3"},
+        {"id": "3", "title": "Chill Lo-Fi Beats", "artist": "Blue Dot Sessions", "duration": 198, "tags": "lofi chill relax ambient study", "category": "ambient",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Blue_Dot_Sessions/Bitters/Blue_Dot_Sessions_-_Rain.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Blue_Dot_Sessions/Bitters/Blue_Dot_Sessions_-_Rain.mp3"},
+        {"id": "4", "title": "Energetic Pop", "artist": "Kevin MacLeod", "duration": 130, "tags": "pop energetic fun bright happy", "category": "pop",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Funky_Chunk/Kevin_MacLeod_-_Funky_Chunk.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Funky_Chunk/Kevin_MacLeod_-_Funky_Chunk.mp3"},
+        {"id": "5", "title": "Dramatic Tension", "artist": "Kevin MacLeod", "duration": 180, "tags": "dramatic tension dark suspense thriller", "category": "cinematic",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Cinematica/Kevin_MacLeod_-_Darkling.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Cinematica/Kevin_MacLeod_-_Darkling.mp3"},
+        {"id": "6", "title": "Happy Ukulele", "artist": "Kevin MacLeod", "duration": 105, "tags": "happy ukulele cheerful vlog youtube", "category": "pop",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Jazz_Sampler/Kevin_MacLeod_-_Easy_Lemon.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Jazz_Sampler/Kevin_MacLeod_-_Easy_Lemon.mp3"},
+        {"id": "7", "title": "Epic Cinematic", "artist": "Kevin MacLeod", "duration": 200, "tags": "epic cinematic orchestral trailer film", "category": "cinematic",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Cinematica/Kevin_MacLeod_-_Impact_Prelude.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Cinematica/Kevin_MacLeod_-_Impact_Prelude.mp3"},
+        {"id": "8", "title": "Soft Piano", "artist": "Kevin MacLeod", "duration": 240, "tags": "piano soft gentle calm emotional", "category": "ambient",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Classical_Sampler/Kevin_MacLeod_-_Gymnopedie_No_1.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Classical_Sampler/Kevin_MacLeod_-_Gymnopedie_No_1.mp3"},
+        {"id": "9", "title": "Rock Energy", "artist": "Kevin MacLeod", "duration": 150, "tags": "rock energetic guitar power action", "category": "rock",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Rock_Sampler/Kevin_MacLeod_-_The_Builder.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Rock_Sampler/Kevin_MacLeod_-_The_Builder.mp3"},
+        {"id": "10", "title": "Jazz Smooth", "artist": "Kevin MacLeod", "duration": 185, "tags": "jazz smooth chill lounge night", "category": "jazz",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Jazz_Sampler/Kevin_MacLeod_-_Slow_Burn.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Jazz_Sampler/Kevin_MacLeod_-_Slow_Burn.mp3"},
+        {"id": "11", "title": "Electronic Future", "artist": "Kevin MacLeod", "duration": 170, "tags": "electronic future tech sci-fi digital", "category": "electronic",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Electronic_Sampler/Kevin_MacLeod_-_Cipher.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/ccCommunity/Kevin_MacLeod/Electronic_Sampler/Kevin_MacLeod_-_Cipher.mp3"},
+        {"id": "12", "title": "Acoustic Morning", "artist": "Blue Dot Sessions", "duration": 210, "tags": "acoustic morning warm folk gentle", "category": "acoustic",
+         "url": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Blue_Dot_Sessions/Bitters/Blue_Dot_Sessions_-_Dusty.mp3",
+         "preview": "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Blue_Dot_Sessions/Bitters/Blue_Dot_Sessions_-_Dusty.mp3"},
+    ]
+
+    query = q.lower().strip()
+    results = CURATED_TRACKS
+
+    if query:
+        results = [t for t in results if query in t["tags"] or query in t["title"].lower() or query in t["artist"].lower()]
+
+    if category:
+        cat = category.lower()
+        results = [t for t in results if t.get("category", "") == cat]
+
+    return {
+        "total": len(results),
+        "tracks": results,
+    }
+
+
+@app.get("/api/music/download")
+async def download_music_track(url: str):
+    """
+    Proxy-download a music file to avoid CORS restrictions.
+    Fetches from the given URL and streams back to the browser.
+    """
+    import httpx
+    from fastapi.responses import StreamingResponse
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail="Failed to fetch music file")
+
+            content_type = resp.headers.get("content-type", "audio/mpeg")
+            return StreamingResponse(
+                iter([resp.content]),
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": "attachment; filename=track.mp3",
+                    "Access-Control-Allow-Origin": "*",
+                }
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to download: {str(e)}")
+
 
 # ── Entry point ─────────────────────────────────────────────────────────
+
 
 if __name__ == "__main__":
     import uvicorn

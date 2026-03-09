@@ -1,7 +1,7 @@
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { TimelineClip, Subtitle, FilterType, TransitionType, AudioClip } from '../types';
-import { Type, Scissors, Wand2, Layers, MoveHorizontal, Mic, Music, Volume2, VolumeX, Trash2, SkipBack, SkipForward } from 'lucide-react';
+import { Type, Scissors, Wand2, Layers, MoveHorizontal, Mic, Music, Volume2, VolumeX, Trash2, SkipBack, SkipForward, Plus } from 'lucide-react';
 
 interface TimelineProps {
   duration: number;
@@ -25,9 +25,10 @@ interface TimelineProps {
   onSelectAudioClip?: (audioClipId: string) => void;
   onMoveAudioClip?: (audioClipId: string, newStart: number) => void;
   onToggleMuteAudioClip?: (audioClipId: string) => void;
+  onAddMusic?: () => void;
 }
 
-const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, clips, subtitles, audioClips = [], selectedAudioClipId = null, onSeek, onSplitAtPlayhead, canSplitAtPlayhead = false, onTrimLeftAtPlayhead, onTrimRightAtPlayhead, onDeleteAtPlayhead, canTrimLeftAtPlayhead = false, canTrimRightAtPlayhead = false, canDeleteAtPlayhead = false, onDropPreset, onMoveVideoClip, onToggleMuteVideoClip, onSelectAudioClip, onMoveAudioClip, onToggleMuteAudioClip }) => {
+const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, clips, subtitles, audioClips = [], selectedAudioClipId = null, onSeek, onSplitAtPlayhead, canSplitAtPlayhead = false, onTrimLeftAtPlayhead, onTrimRightAtPlayhead, onDeleteAtPlayhead, canTrimLeftAtPlayhead = false, canTrimRightAtPlayhead = false, canDeleteAtPlayhead = false, onDropPreset, onMoveVideoClip, onToggleMuteVideoClip, onSelectAudioClip, onMoveAudioClip, onToggleMuteAudioClip, onAddMusic }) => {
   const progressBarRef = useRef<HTMLDivElement>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [draggedOverClip, setDraggedOverClip] = useState<string | null>(null);
@@ -297,7 +298,21 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, clips, subti
 
           {/* Audio Track */}
           <div className="h-20 relative bg-green-900/10 rounded-lg border border-green-500/10">
-            <div className="absolute left-0 -top-4 text-[8px] text-green-400 font-black uppercase tracking-[0.2em] opacity-60">Audio Track</div>
+            <div className="absolute left-0 -top-5 flex items-center gap-2">
+              <span className="text-[8px] text-green-400 font-black uppercase tracking-[0.2em] opacity-60">Audio Track</span>
+              {onAddMusic && (
+                <button
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onAddMusic(); }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-600/20 hover:bg-green-500/30 border border-green-500/30 hover:border-green-400/50 text-green-400 hover:text-green-300 text-[8px] font-black uppercase tracking-wider transition-all hover:scale-105 active:scale-95 shadow-sm"
+                  title="Add royalty-free music from library"
+                >
+                  <Plus size={8} />
+                  <Music size={8} />
+                  Add Music
+                </button>
+              )}
+            </div>
             {audioClips.map((audio) => (
               <div
                 key={audio.id}
@@ -314,11 +329,10 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, clips, subti
                   e.stopPropagation();
                   onSelectAudioClip?.(audio.id);
                 }}
-                className={`absolute top-1.5 bottom-1.5 border rounded flex flex-col items-start justify-center px-3 shadow-sm overflow-hidden ${
-                  audio.type === 'voiceover' 
-                    ? 'bg-red-500/20 border-red-400/30 text-red-300' 
+                className={`absolute top-1.5 bottom-1.5 border rounded flex flex-col items-start justify-center px-3 shadow-sm overflow-hidden ${audio.type === 'voiceover'
+                    ? 'bg-red-500/20 border-red-400/30 text-red-300'
                     : 'bg-green-500/20 border-green-400/30 text-green-300'
-                } ${selectedAudioClipId === audio.id ? 'ring-2 ring-lumina-400 shadow-[0_0_16px_rgba(14,165,233,0.35)]' : ''} ${draggingAudioId === audio.id ? 'cursor-grabbing' : 'cursor-grab'}`}
+                  } ${selectedAudioClipId === audio.id ? 'ring-2 ring-lumina-400 shadow-[0_0_16px_rgba(14,165,233,0.35)]' : ''} ${draggingAudioId === audio.id ? 'cursor-grabbing' : 'cursor-grab'}`}
                 style={{
                   left: `${(audio.start / timelineDuration) * 100}%`,
                   width: `${(audio.duration / timelineDuration) * 100}%`
@@ -344,8 +358,8 @@ const Timeline: React.FC<TimelineProps> = ({ duration, currentTime, clips, subti
                 {/* Simple waveform visualization */}
                 <div className="flex items-end gap-[1px] h-8 w-full mt-2 opacity-50">
                   {Array.from({ length: Math.min(20, Math.ceil(audio.duration * 2)) }).map((_, i) => (
-                    <div 
-                      key={i} 
+                    <div
+                      key={i}
                       className={`flex-1 rounded-t-sm ${audio.type === 'voiceover' ? 'bg-red-400' : 'bg-green-400'}`}
                       style={{ height: `${getStableWaveHeight(audio.id, i)}%` }}
                     />

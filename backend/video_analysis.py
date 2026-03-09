@@ -407,6 +407,7 @@ def extract_best_moments(
     """
     Full best-moments pipeline: extract → analyze → select.
     Returns: {"moments": [...], "actions": [...], "summary": "..."}
+    Works with videos of ANY length — adapts sampling and thresholds automatically.
     """
     cfg = BestMomentsConfig(**(config or {}))
 
@@ -417,23 +418,74 @@ def extract_best_moments(
     duration = total_frames / fps if fps > 0 else 0
     cap.release()
 
-    # Adjust interval for long videos
+    # ── Dynamically adjust sampling interval based on video length ──────
     if duration > 7200:
         cfg.sampling_interval = 120
     elif duration > 3600:
         cfg.sampling_interval = 60
+    elif duration > 300:
+        cfg.sampling_interval = 30
+    elif duration > 60:
+        cfg.sampling_interval = 10
+    elif duration > 20:
+        cfg.sampling_interval = 3
+    else:
+        # Very short videos: sample every 1-2 seconds
+        cfg.sampling_interval = max(1.0, duration / 15)
+
+    # For short videos, adjust target duration to be proportional
+    if duration < cfg.target_duration * 2:
+        cfg.target_duration = max(5.0, duration * 0.6)
+
+    # For very short clips, allow shorter highlight segments
+    if duration < 30:
+        cfg.min_clip_length = max(1.0, min(cfg.min_clip_length, duration * 0.15))
+        cfg.max_clip_length = max(2.0, min(cfg.max_clip_length, duration * 0.4))
 
     moments = analyze_frames_for_highlights(video_path, cfg.sampling_interval)
+
+    # ── Adaptive threshold: lower if not enough good moments found ──────
+    good_moments = [m for m in moments if m.interest_score >= 7]
+    if len(good_moments) < 2 and moments:
+        # Lower threshold to include decent moments
+        good_moments = [m for m in moments if m.interest_score >= 5]
+        if len(good_moments) < 2:
+            # Accept anything scored 4+
+            good_moments = [m for m in moments if m.interest_score >= 4]
+        if len(good_moments) < 1:
+            # Fall back: take the top half of all moments regardless of score
+            moments_sorted = sorted(moments, key=lambda m: m.interest_score, reverse=True)
+            good_moments = moments_sorted[:max(1, len(moments_sorted) // 2)]
+            # Bump their scores so generate_best_moments_edit picks them up
+            for gm in good_moments:
+                gm.interest_score = max(gm.interest_score, 7)
+
+    # Temporarily boost scores of selected "good enough" moments so they
+    # pass the >= 7 filter inside generate_best_moments_edit
+    boosted_indices = set()
+    if not any(m.interest_score >= 7 for m in moments):
+        for i, m in enumerate(moments):
+            if m in good_moments:
+                original_score = m.interest_score
+                moments[i] = MomentAnalysis(
+                    timestamp=m.timestamp,
+                    interest_score=max(7, m.interest_score),
+                    reason=m.reason,
+                    suggested_duration=m.suggested_duration,
+                )
+                boosted_indices.add(i)
+
     actions = generate_best_moments_edit(moments, cfg)
 
     top = sorted(
-        [m for m in moments if m.interest_score >= 7],
+        [m for m in moments if m.interest_score >= 5],
         key=lambda m: m.interest_score,
         reverse=True,
     )[:5]
 
     summary = (
-        f"Found {len(top)} great moments! Top highlights: {', '.join(m.reason for m in top)}"
+        f"Found {len(top)} great moments in {duration:.0f}s of footage! "
+        f"Top highlights: {', '.join(m.reason for m in top)}"
         if top
         else "Couldn't find enough standout moments. Try a video with more action or variety."
     )

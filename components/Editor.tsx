@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import VideoPlayer, { VideoPlayerRef } from './VideoPlayer';
 import Timeline from './Timeline';
+import MusicBrowser from './MusicBrowser';
 import ControlPanel from './ControlPanel';
 import AIAssistant from './AIAssistant';
 import { VideoState, ChatMessage, TimelineClip, Project, AIAction, Subtitle, FilterType, TransitionType, AudioClip, AppSettings, ExportFormat } from '../types';
@@ -87,6 +88,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
     const discardRecordingRef = useRef(false);
     const audioContextRef = useRef<AudioContext | null>(null);
     const recordedAudioChunksRef = useRef<Blob[]>([]);
+    const [showMusicBrowser, setShowMusicBrowser] = useState(false);
 
     useEffect(() => {
         setSelectedExportFormat(appSettings.defaultExportFormat || 'mp4');
@@ -409,7 +411,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
             const now = performance.now();
             if (now - lastStateUpdateRef.current > 50) {
                 lastStateUpdateRef.current = now;
-                
+
                 setVideoState(prev => {
                     if (!prev.isPlaying) return prev;
                     return { ...prev, currentTime: nextTime };
@@ -606,7 +608,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
             const recorder = preferredMime
                 ? new MediaRecorder(stream, { mimeType: preferredMime })
                 : new MediaRecorder(stream);
-            
+
             recordedAudioChunksRef.current = [];
             discardRecordingRef.current = false;
             recordingStartPositionRef.current = videoState.currentTime;
@@ -634,7 +636,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                 const blobType = recorder.mimeType || 'audio/webm';
                 const blob = new Blob(recordedAudioChunksRef.current, { type: blobType });
                 const file = new File([blob], `voiceover-${Date.now()}.webm`, { type: blobType });
-                
+
                 // Upload the recording
                 const id = generateId();
                 try {
@@ -661,7 +663,7 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                         volume: 1.0,
                         recordedAt: Date.now()
                     };
-                    
+
                     setAudioClips(prev => [...prev, newAudioClip]);
                     setMessages(prev => [...prev, {
                         id: generateId(),
@@ -911,9 +913,9 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
     const handleBestMoments = async () => {
         if (clips.length === 0) return;
 
-        // Find the first video clip
-        const videoClip = clips.find(c => c.type === 'video');
-        if (!videoClip) {
+        // Find ALL video clips
+        const videoClips = clips.filter(c => c.type === 'video');
+        if (videoClips.length === 0) {
             setMessages(prev => [...prev, {
                 id: generateId(),
                 role: 'model',
@@ -930,67 +932,110 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
         setMessages(prev => [...prev, {
             id: generateId(),
             role: 'user',
-            text: "Extract the best moments and create a 30-second highlight reel"
+            text: "Extract the best moments and create a highlight reel"
         }]);
 
         try {
-            // Create a temporary video element for analysis
-            const tempVideo = document.createElement('video');
-            tempVideo.src = videoClip.src;
-            tempVideo.crossOrigin = "anonymous";
-            tempVideo.preload = "metadata";
+            // Calculate total footage duration across all video clips
+            const totalFootageDuration = videoClips.reduce((sum, c) => sum + c.duration, 0);
+            const targetHighlightDuration = Math.max(5, Math.min(30, totalFootageDuration * 0.4));
 
-            await new Promise<void>((resolve, reject) => {
-                tempVideo.onloadedmetadata = () => resolve();
-                tempVideo.onerror = () => reject(new Error("Failed to load video"));
-            });
+            // Analyze each video clip and collect all results
+            const allHighlightClips: TimelineClip[] = [];
+            let currentTimelineStart = 0;
 
-            // Check if video is long enough
-            if (tempVideo.duration < 60) {
+            for (let clipIdx = 0; clipIdx < videoClips.length; clipIdx++) {
+                const videoClip = videoClips[clipIdx];
+                const clipWeight = videoClip.duration / totalFootageDuration;
+                const clipTargetDuration = Math.max(2, targetHighlightDuration * clipWeight);
+
+                setAnalysisStatus(`Analyzing clip ${clipIdx + 1} of ${videoClips.length}: ${videoClip.name}...`);
+                setAnalysisProgress(Math.round((clipIdx / videoClips.length) * 70));
+
+                // Create a temporary video element for analysis
+                const tempVideo = document.createElement('video');
+                tempVideo.src = videoClip.src;
+                tempVideo.crossOrigin = "anonymous";
+                tempVideo.preload = "metadata";
+
+                await new Promise<void>((resolve, reject) => {
+                    tempVideo.onloadedmetadata = () => resolve();
+                    tempVideo.onerror = () => reject(new Error(`Failed to load video: ${videoClip.name}`));
+                });
+
+                // Run the analysis on this clip
+                const result = await extractBestMoments(
+                    tempVideo,
+                    { targetDuration: clipTargetDuration },
+                    (progress, status) => {
+                        const baseProgress = Math.round((clipIdx / videoClips.length) * 70);
+                        const clipProgress = Math.round((progress / 100) * (70 / videoClips.length));
+                        setAnalysisProgress(baseProgress + clipProgress);
+                        setAnalysisStatus(`Clip ${clipIdx + 1}/${videoClips.length}: ${status}`);
+                    }
+                );
+
+                // Extract highlight ranges from the actions and create clips
+                for (const action of result.actions) {
+                    if (action.action === 'keep_only_highlights' && action.parameters?.ranges) {
+                        const ranges = action.parameters.ranges as Array<{ start: number; end: number }>;
+                        const transition = (action.parameters.transition || 'fade') as TransitionType;
+                        const filter = (action.parameters.filter || 'none') as FilterType;
+
+                        for (let i = 0; i < ranges.length; i++) {
+                            const range = ranges[i];
+                            const clipDuration = range.end - range.start;
+
+                            allHighlightClips.push({
+                                id: generateId(),
+                                type: 'video',
+                                src: videoClip.src,
+                                name: `${videoClip.name} - Highlight ${allHighlightClips.length + 1}`,
+                                start: currentTimelineStart,
+                                duration: clipDuration,
+                                offset: range.start,
+                                filter: filter !== 'none' ? filter : undefined,
+                                transitionIn: allHighlightClips.length > 0 ? transition : undefined,
+                                transitionInDuration: 0.5,
+                            });
+
+                            currentTimelineStart += clipDuration;
+                        }
+                    }
+                }
+            }
+
+            setAnalysisProgress(90);
+            setAnalysisStatus("Building highlight reel...");
+
+            // If we got highlight clips, replace the timeline
+            if (allHighlightClips.length > 0) {
+                const totalDur = allHighlightClips.reduce((acc, c) => acc + c.duration, 0);
+
+                setVideoState(prev => ({
+                    ...prev,
+                    duration: totalDur,
+                    currentTime: 0,
+                }));
+                setClips(allHighlightClips);
+
+                // Count top moments across all clips
                 setMessages(prev => [...prev, {
                     id: generateId(),
                     role: 'model',
-                    text: `Your video is only ${Math.round(tempVideo.duration)} seconds long. Best Moments works best with videos over 1 minute. Try the Auto-Draft feature instead!`
+                    text: `🌟 Analyzed ${videoClips.length} video clip${videoClips.length > 1 ? 's' : ''} (${Math.round(totalFootageDuration)}s of footage) and created a ${Math.round(totalDur)}s highlight reel with ${allHighlightClips.length} best moments! Click Play to preview!`
                 }]);
-                setIsAnalyzingMoments(false);
-                return;
+
+                setShowDraftPreview(true);
+                setIsViewingDraft(true);
+            } else {
+                // Fallback: no highlights found — notify user
+                setMessages(prev => [...prev, {
+                    id: generateId(),
+                    role: 'model',
+                    text: "I couldn't find enough standout moments in the video(s). Try uploading footage with more action, movement, or visual variety!"
+                }]);
             }
-
-            // Run the analysis
-            const result = await extractBestMoments(
-                tempVideo,
-                { targetDuration: 30 },
-                (progress, status) => {
-                    setAnalysisProgress(progress);
-                    setAnalysisStatus(status);
-                }
-            );
-
-            // Apply the edit actions
-            let currentState = { ...videoState };
-            let currentClips = [...clips];
-
-            for (const action of result.actions) {
-                const res = await applyAIAction(action, currentState, currentClips);
-                currentState = res.newState;
-                currentClips = res.updatedClips;
-            }
-
-            const totalDur = currentClips.reduce((acc, c) => acc + c.duration, 0);
-            currentState.duration = totalDur;
-
-            setVideoState(currentState);
-            setClips(currentClips);
-
-            // Add success message
-            setMessages(prev => [...prev, {
-                id: generateId(),
-                role: 'model',
-                text: `🌟 ${result.summary}\n\nI've created a highlight reel with the best moments! The timeline has been updated with ${result.moments.filter(m => m.interestScore >= 7).length} top moments. Click Play to preview!`
-            }]);
-
-            setShowDraftPreview(true);
-            setIsViewingDraft(true);
 
         } catch (error: any) {
             console.error("Best moments analysis failed:", error);
@@ -1280,10 +1325,10 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
             // ── Set full-resolution frame as the thumbnail base ───────────────
             setThumbnailBaseFrame(result.dataUrl);
 
-            const who    = result.gemini_reason && !result.gemini_reason.startsWith('Selected by visual')
+            const who = result.gemini_reason && !result.gemini_reason.startsWith('Selected by visual')
                 ? 'Gemini AI'
                 : 'visual analysis';
-            const tl     = (primaryClip.start + Math.max(0, result.timestamp - primaryClip.offset)).toFixed(1);
+            const tl = (primaryClip.start + Math.max(0, result.timestamp - primaryClip.offset)).toFixed(1);
             setThumbnailStatus(
                 `${who} selected the best scene at ~${tl}s on your timeline. ` +
                 `Reason: ${result.gemini_reason || result.reason}. ` +
@@ -2159,20 +2204,18 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                                                     <button
                                                         key={fmt.id}
                                                         onClick={() => setSelectedExportFormat(fmt.id)}
-                                                        className={`relative flex flex-col items-center gap-2 p-4 rounded-2xl border-2 transition-all duration-200 ${
-                                                            selectedExportFormat === fmt.id
-                                                                ? `border-${fmt.color}-500 bg-${fmt.color}-500/10 shadow-lg shadow-${fmt.color}-500/10`
-                                                                : 'border-gray-700/50 bg-black/30 hover:border-gray-600 hover:bg-gray-800/50'
-                                                        }`}
+                                                        className={`relative flex flex-col items-center gap-2 p-4 rounded-2xl border-2 transition-all duration-200 ${selectedExportFormat === fmt.id
+                                                            ? `border-${fmt.color}-500 bg-${fmt.color}-500/10 shadow-lg shadow-${fmt.color}-500/10`
+                                                            : 'border-gray-700/50 bg-black/30 hover:border-gray-600 hover:bg-gray-800/50'
+                                                            }`}
                                                     >
                                                         {selectedExportFormat === fmt.id && (
                                                             <div className={`absolute -top-2 -right-2 w-5 h-5 bg-${fmt.color}-500 rounded-full flex items-center justify-center`}>
                                                                 <Check size={12} className="text-white" />
                                                             </div>
                                                         )}
-                                                        <span className={`text-lg font-black uppercase tracking-tight ${
-                                                            selectedExportFormat === fmt.id ? 'text-white' : 'text-gray-400'
-                                                        }`}>
+                                                        <span className={`text-lg font-black uppercase tracking-tight ${selectedExportFormat === fmt.id ? 'text-white' : 'text-gray-400'
+                                                            }`}>
                                                             .{fmt.label}
                                                         </span>
                                                         <span className="text-[9px] text-gray-500 font-bold uppercase tracking-wider">{fmt.desc}</span>
@@ -2609,6 +2652,32 @@ const Editor: React.FC<EditorProps> = ({ project, appSettings, onBack }) => {
                         onSelectAudioClip={handleSelectAudioClip}
                         onMoveAudioClip={handleMoveAudioClip}
                         onToggleMuteAudioClip={handleToggleMuteAudioClip}
+                        onAddMusic={() => setShowMusicBrowser(true)}
+                    />
+
+                    <MusicBrowser
+                        isOpen={showMusicBrowser}
+                        onClose={() => setShowMusicBrowser(false)}
+                        currentTime={videoState.currentTime}
+                        onAddTrack={(track) => {
+                            const id = generateId();
+                            const newAudioClip: AudioClip = {
+                                id,
+                                type: 'audio',
+                                src: track.url,
+                                name: track.name,
+                                start: videoState.currentTime,
+                                duration: track.duration,
+                                offset: 0,
+                                volume: 0.6,
+                            };
+                            setAudioClips(prev => [...prev, newAudioClip]);
+                            setMessages(prev => [...prev, {
+                                id: generateId(),
+                                role: 'model',
+                                text: `🎵 Added "${track.name}" to the audio track at ${videoState.currentTime.toFixed(1)}s!`
+                            }]);
+                        }}
                     />
                 </div>
             </div>
